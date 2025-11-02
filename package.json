@@ -1,0 +1,32 @@
+{
+  "name": "live-art",
+  "private": true,
+  "packageManager": "pnpm@9.10.0",
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "turbo run dev --parallel",
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "format": "prettier -w ."
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.5",
+    "eslint": "^9.11.1",
+    "prettier": "^3.3.3",
+    "turbo": "^2.1.2",
+    "typescript": "^5.6.2"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "^5.90.5",
+    "@wagmi/connectors": "^6.1.0",
+    "@wagmi/core": "^2.22.1",
+    "tsx": "^4.20.6",
+    "viem": "^2.38.4",
+    "wagmi": "^2.18.2"
+  }
+}

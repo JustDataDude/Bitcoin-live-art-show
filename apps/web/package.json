@@ -1,0 +1,36 @@
+{
+  "name": "@live-art/web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev -p 3000",
+    "build": "next build",
+    "start": "next start -p 3000",
+    "lint": "next lint",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@live-art/config": "workspace:*",
+    "@live-art/db": "workspace:*",
+    "@live-art/ui": "workspace:*",
+    "@livekit/components-react": "^2.6.0",
+    "@prisma/client": "^5.19.1",
+    "autoprefixer": "^10.4.20",
+    "ioredis": "^5.4.1",
+    "livekit-client": "^2.5.4",
+    "livekit-server-sdk": "^2.14.0",
+    "next": "^14.2.7",
+    "postcss": "^8.4.47",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "socket.io-client": "^4.7.5",
+    "tailwindcss": "^3.4.14",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.5",
+    "@types/react": "^18.3.7",
+    "@types/react-dom": "^18.3.0",
+    "typescript": "^5.6.2"
+  }
+}

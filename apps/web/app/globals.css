@@ -1,0 +1,41 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+	--bg-primary: #0a0614;
+	--bg-secondary: #1a1428;
+	--accent-blue: #3b82f6;
+	--accent-purple: #8b5cf6;
+	--accent-pink: #ec4899;
+	--text-primary: #ffffff;
+	--text-secondary: #e2e8f0;
+	--text-muted: #94a3b8;
+}
+
+body { 
+	background: linear-gradient(135deg, #0a0614 0%, #1a1428 50%, #0f172a 100%);
+	background-attachment: fixed;
+	color: var(--text-primary);
+	min-height: 100vh;
+}
+
+/* Glassmorphism effect */
+.glass {
+	background: rgba(26, 20, 40, 0.7);
+	backdrop-filter: blur(10px);
+	border: 1px solid rgba(139, 92, 246, 0.2);
+}
+
+/* Gradient text */
+.gradient-text {
+	background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 50%, #ec4899 100%);
+	-webkit-background-clip: text;
+	-webkit-text-fill-color: transparent;
+	background-clip: text;
+}
+
+/* Glowing border */
+.glow-border {
+	box-shadow: 0 0 20px rgba(139, 92, 246, 0.3), 0 0 40px rgba(59, 130, 246, 0.2);
+}

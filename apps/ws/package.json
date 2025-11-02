@@ -1,0 +1,26 @@
+{
+  "name": "@live-art/ws",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "build": "tsup src/index.ts --format esm,cjs --dts --clean",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@live-art/config": "workspace:*",
+    "@live-art/db": "workspace:*",
+    "@prisma/client": "^5.19.1",
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "ioredis": "^5.4.1",
+    "socket.io": "^4.7.5"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.1",
+    "tsup": "^8.2.4",
+    "typescript": "^5.6.2"
+  }
+}

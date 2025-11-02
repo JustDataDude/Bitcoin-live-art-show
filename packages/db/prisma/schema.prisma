@@ -1,0 +1,139 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+model User {
+  id        String   @id @default(cuid())
+  handle    String   @unique
+  username  String?
+  role      String   @default("viewer")
+  wallets   Wallet[]
+  bids      Bid[]
+  tips      Tip[]
+  messages  ChatMessage[]
+  createdAt DateTime @default(now())
+}
+
+model Wallet {
+  id      String @id @default(cuid())
+  userId  String
+  chain   String
+  address String
+  user    User   @relation(fields: [userId], references: [id])
+}
+
+model Show {
+  id       String    @id @default(cuid())
+  title    String
+  status   String
+  artistId String
+  lots     Lot[]
+  startAt  DateTime?
+  endAt    DateTime?
+}
+
+model Lot {
+  id            String    @id @default(cuid())
+  showId        String
+  show          Show      @relation(fields: [showId], references: [id])
+  title         String
+  description   String
+  reserveUsd    Int?
+  currency      String
+  status        String
+  currentBidId  String?
+  tipsTotalUsd  Int       @default(0)
+  auctionEndsAt DateTime?
+  bids          Bid[]
+  tips          Tip[]
+}
+
+model Bid {
+  id        String   @id @default(cuid())
+  lotId     String
+  lot       Lot      @relation(fields: [lotId], references: [id])
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  amountUsd Int
+  createdAt DateTime @default(now())
+  
+  @@index([lotId])
+  @@index([userId])
+}
+
+model Tip {
+  id        String   @id @default(cuid())
+  lotId     String
+  lot       Lot      @relation(fields: [lotId], references: [id])
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  amountUsd Int
+  message   String?
+  chain     String
+  txHash    String?
+  createdAt DateTime @default(now())
+  
+  @@index([lotId])
+  @@index([userId])
+}
+
+model Payment {
+  id        String   @id @default(cuid())
+  lotId     String
+  payerId   String
+  amountUsd Int
+  chain     String
+  status    String
+  txHash    String?
+  createdAt DateTime @default(now())
+}
+
+model InscriptionRequest {
+  id            String   @id @default(cuid())
+  lotId         String
+  buyerPaysFee  Boolean  @default(true)
+  status        String
+  feeSats       Int?
+  inscriptionId String?
+  createdAt     DateTime @default(now())
+}
+
+model ChatMessage {
+  id        String   @id @default(cuid())
+  lotId     String
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  username  String
+  message   String
+  type      String   @default("chat") // "chat", "bid", "tip"
+  createdAt DateTime @default(now())
+  
+  @@index([lotId])
+  @@index([userId])
+}
+
+model Fee {
+  id          String    @id @default(cuid())
+  lotId       String?
+  sourceType  String    // "bid", "tip", "payment"
+  sourceId    String    // ID of the bid/tip/payment that generated this fee
+  amountUsd   Int       // Fee amount in USD cents
+  feeRate     Float     // Percentage rate used (e.g., 0.05 for 5%)
+  status      String    @default("pending") // "pending", "collected"
+  collectedAt DateTime?
+  collectedBy String?   // Admin user ID who collected it
+  chain       String?   // Chain for payment collection (if applicable)
+  txHash      String?   // Transaction hash if collected on-chain
+  metadata    String?   // JSON string for additional metadata
+  createdAt   DateTime  @default(now())
+  
+  @@index([sourceType, sourceId])
+  @@index([lotId])
+  @@index([status])
+  @@index([createdAt])
+}
