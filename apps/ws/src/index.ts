@@ -3,10 +3,26 @@ import cors from "cors";
 import { createServer } from "http";
 import { Server, Socket } from "socket.io";
 import { PrismaClient } from "@prisma/client";
+import { bidRateLimiter, tipRateLimiter, messageRateLimiter } from "./rateLimiter";
+import { withRetry } from "./dbRetry";
+
 const prisma = new PrismaClient();
 
 const app = express();
-app.use(cors());
+
+// CORS configuration for production
+const corsOptions = {
+	origin: process.env.CORS_ORIGIN 
+		? process.env.CORS_ORIGIN.split(',').map(o => o.trim())
+		: process.env.NODE_ENV === 'production' 
+			? false // Deny all in production if not configured
+			: '*', // Allow all in development
+	credentials: true,
+	methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+	allowedHeaders: ['Content-Type', 'Authorization'],
+};
+
+app.use(cors(corsOptions));
 app.use(express.json());
 
 // Fee configuration
@@ -75,10 +91,7 @@ async function generateFee(params: {
 
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
-  cors: {
-    origin: "*",
-    methods: ["GET", "POST"],
-  },
+  cors: corsOptions,
   transports: ["websocket", "polling"],
   allowEIO3: true,
   pingTimeout: 60000,
@@ -110,8 +123,11 @@ const streams: Record<string, { publisherId: string; viewers: Set<string> }> = {
 // Global banned users for this session
 const bannedUsers = new Set<string>();
 
-// Deleted message IDs (soft delete)
-const deletedMessages = new Set<number>();
+// Deleted message IDs (soft delete) - can be string or number
+const deletedMessages = new Set<string | number>();
+
+// In-memory votes store (keyed by lotId:artistId)
+const votes: Record<string, { artistId: string; userId: string; username: string; timestamp: number }[]> = {};
 
 io.on("connection", (socket) => {
   console.log(`[Socket.io] Client connected: ${socket.id}`);
@@ -320,32 +336,52 @@ io.on("connection", (socket) => {
 
   socket.on("place_bid", async ({ lotId, amountUsd, username }) => {
     try {
+      // Rate limiting
+      const rateLimitKey = `bid:${socket.id}`;
+      const rateLimit = bidRateLimiter.canPerform(rateLimitKey);
+      
+      if (!rateLimit.allowed) {
+        const waitSeconds = Math.ceil((rateLimit.resetAt! - Date.now()) / 1000);
+        socket.emit("error", { 
+          message: `Rate limit exceeded. Please wait ${waitSeconds} seconds before placing another bid.`,
+          code: "RATE_LIMIT_EXCEEDED"
+        });
+        console.log(`[Bid] Rate limited: ${socket.id} (wait ${waitSeconds}s)`);
+        return;
+      }
+
+      // Validate amount
+      if (!amountUsd || amountUsd < 1 || amountUsd > 1000000) {
+        socket.emit("error", { 
+          message: "Invalid bid amount. Must be between $1 and $1,000,000.",
+          code: "INVALID_AMOUNT"
+        });
+        return;
+      }
+
       // Get or create user
       const user = await getOrCreateUser(socket, username);
       if (!user) throw new Error('User not resolved');
       
-      // Get current highest bid
+      // Get current highest bid (for reference only, no minimum increment required)
       const currentHighest = await prisma.bid.findFirst({
         where: { lotId },
         orderBy: { amountUsd: 'desc' },
       });
       
-      const minIncrement = Math.max(1, Math.floor((currentHighest?.amountUsd || 0) * 0.05));
-      const required = (currentHighest?.amountUsd || 0) + minIncrement;
-      
-      if (amountUsd < required) {
-        console.log(`[Bid] Rejected: $${amountUsd} is below required $${required}`);
-        return; // ignore invalid bids
-      }
+      // Allow any bid >= $1, regardless of current highest bid
+      // No minimum increment requirement
 
-      // Save bid to database
-      const bid = await prisma.bid.create({
-        data: {
-          lotId,
-          userId: user.id,
-          amountUsd,
-        },
-      });
+      // Save bid to database with retry logic
+      const bid = await withRetry(() => 
+        prisma.bid.create({
+          data: {
+            lotId,
+            userId: user.id,
+            amountUsd,
+          },
+        })
+      ) as any;
 
       // Generate fee for this bid
       await generateFee({
@@ -358,11 +394,13 @@ io.on("connection", (socket) => {
       const evt = {
         type: "BID_PLACED",
         data: { 
+          bidId: bid.id,
           lotId, 
-          userId: socket.id, 
+          userId: user.id, 
           username: (user as any).username,
           amountUsd, 
-          createdAt: bid.createdAt.toISOString() 
+          createdAt: bid.createdAt.toISOString(),
+          ts: bid.createdAt.getTime()
         },
       } as const;
 
@@ -370,25 +408,59 @@ io.on("connection", (socket) => {
       console.log(`[Bid] ${(user as any).username} bid $${amountUsd} on ${lotId}`);
     } catch (error) {
       console.error("[Bid] Error:", error);
+      socket.emit("error", { 
+        message: error instanceof Error ? error.message : "Failed to place bid. Please try again.",
+        code: "BID_ERROR"
+      });
     }
   });
 
-  socket.on("send_tip", async ({ lotId, amountUsd, username, message }) => {
+  socket.on("send_tip", async ({ lotId, amountUsd, username, message, artistId }) => {
     try {
+      // Rate limiting
+      const rateLimitKey = `tip:${socket.id}`;
+      const rateLimit = tipRateLimiter.canPerform(rateLimitKey);
+      
+      if (!rateLimit.allowed) {
+        const waitSeconds = Math.ceil((rateLimit.resetAt! - Date.now()) / 1000);
+        socket.emit("error", { 
+          message: `Rate limit exceeded. Please wait ${waitSeconds} seconds before sending another tip.`,
+          code: "RATE_LIMIT_EXCEEDED"
+        });
+        console.log(`[Tip] Rate limited: ${socket.id} (wait ${waitSeconds}s)`);
+        return;
+      }
+
+      // Validate amount
+      if (!amountUsd || amountUsd < 0.01 || amountUsd > 10000) {
+        socket.emit("error", { 
+          message: "Invalid tip amount. Must be between $0.01 and $10,000.",
+          code: "INVALID_AMOUNT"
+        });
+        return;
+      }
+
+      // Validate message (sanitize)
+      const sanitizedMessage = typeof message === 'string' 
+        ? message.trim().substring(0, 500).replace(/<[^>]*>/g, '')
+        : '';
+
       // Get or create user
       const user = await getOrCreateUser(socket, username);
       if (!user) throw new Error('User not resolved');
       
-      // Save tip to database
-      const tip = await (prisma.tip as any).create({
-        data: {
-          lotId,
-          userId: user.id,
-          amountUsd,
-          message: message || null,
-          chain: "USD", // Can be updated when real payments are integrated
-        } as any,
-      });
+      // Save tip to database with retry logic
+      const tip = await withRetry(() =>
+        (prisma.tip as any).create({
+          data: {
+            lotId,
+            userId: user.id,
+            amountUsd,
+            message: sanitizedMessage || null,
+            chain: "USD", // Can be updated when real payments are integrated
+          } as any,
+        })
+      ) as any;
 
       // Generate fee for this tip
       await generateFee({
@@ -399,31 +471,37 @@ io.on("connection", (socket) => {
         chain: tip.chain,
       });
 
-      // Update lot's tip total
-      await prisma.lot.update({
-        where: { id: lotId },
-        data: {
-          tipsTotalUsd: {
-            increment: amountUsd,
+      // Update lot's tip total with retry logic
+      await withRetry(() =>
+        prisma.lot.update({
+          where: { id: lotId },
+          data: {
+            tipsTotalUsd: {
+              increment: amountUsd,
+            },
           },
-        },
-      });
+        })
+      );
 
       const evt = {
         type: "TIP_RECEIVED",
         data: { 
+          tipId: tip.id,
           lotId, 
-          userId: socket.id, 
+          userId: user.id, 
           username: (user as any).username,
           amountUsd, 
-          message: message || '',
+          message: sanitizedMessage || '',
+          artistId: artistId || null,
           chain: "USD", 
-          createdAt: tip.createdAt.toISOString() 
+          createdAt: tip.createdAt.toISOString(),
+          ts: tip.createdAt.getTime()
         },
       };
       
       io.to(lotId).emit("TIP_RECEIVED", evt);
-      console.log(`[Tip] ${(user as any).username} tipped $${amountUsd} on ${lotId}: "${message}"`);
+      const artistInfo = artistId ? ` to ${artistId}` : '';
+      console.log(`[Tip] ${(user as any).username} tipped $${amountUsd}${artistInfo} on ${lotId}: "${sanitizedMessage}"`);
     } catch (error) {
       console.error("[Tip] Error:", error);
     }
@@ -448,11 +526,15 @@ io.on("connection", (socket) => {
   });
 
   // Delete message handler
-  socket.on("delete_message", ({ messageId }) => {
-    if (messageId) {
+  socket.on("delete_message", ({ messageId, lotId }) => {
+    if (messageId !== undefined && messageId !== null) {
       deletedMessages.add(messageId);
-      console.log(`[Chat] Message deleted: ${messageId}`);
+      console.log(`[Chat] Message deleted: ${messageId} for lot: ${lotId || "seed-lot-1"}`);
+      const targetLotId = lotId || "seed-lot-1";
+      io.to(targetLotId).emit("message_deleted", { messageId });
       io.emit("message_deleted", { messageId });
+    } else {
+      console.error("[Chat] delete_message received without messageId");
     }
   });
 
@@ -469,10 +551,46 @@ io.on("connection", (socket) => {
 
   socket.on("send_message", async ({ lotId, message, username }) => {
     try {
+      // Rate limiting
+      const rateLimitKey = `message:${socket.id}`;
+      const rateLimit = messageRateLimiter.canPerform(rateLimitKey);
+      
+      if (!rateLimit.allowed) {
+        const waitSeconds = Math.ceil((rateLimit.resetAt! - Date.now()) / 1000);
+        socket.emit("error", { 
+          message: `Rate limit exceeded. Please wait ${waitSeconds} seconds before sending another message.`,
+          code: "RATE_LIMIT_EXCEEDED"
+        });
+        console.log(`[Chat] Rate limited: ${socket.id} (wait ${waitSeconds}s)`);
+        return;
+      }
+
+      // Validate and sanitize message
+      if (!message || typeof message !== 'string') {
+        socket.emit("error", { 
+          message: "Message cannot be empty.",
+          code: "INVALID_MESSAGE"
+        });
+        return;
+      }
+
+      const sanitizedMessage = message.trim().substring(0, 500).replace(/<[^>]*>/g, '');
+      
+      if (!sanitizedMessage || sanitizedMessage.length === 0) {
+        socket.emit("error", { 
+          message: "Message cannot be empty.",
+          code: "INVALID_MESSAGE"
+        });
+        return;
+      }
+
       // Check if user is banned
       if (bannedUsers.has(username)) {
         console.log(`[Chat] Blocked message from banned user: ${username}`);
-        socket.emit("error", { message: "You have been banned from chat" });
+        socket.emit("error", { 
+          message: "You have been banned from chat",
+          code: "USER_BANNED"
+        });
         return;
       }
 
@@ -480,16 +598,18 @@ io.on("connection", (socket) => {
       const user = await getOrCreateUser(socket, username);
       if (!user) throw new Error('User not resolved');
       
-      // Save chat message to database
-      const chatMessage = await (prisma as any).chatMessage.create({
-        data: {
-          lotId,
-          userId: user.id,
-          username: (user as any).username,
-          message,
-          type: "chat",
-        } as any,
-      });
+      // Save chat message to database with retry logic
+      const chatMessage = await withRetry(() =>
+        (prisma as any).chatMessage.create({
+          data: {
+            lotId,
+            userId: user.id,
+            username: (user as any).username,
+            message: sanitizedMessage,
+            type: "chat",
+          } as any,
+        })
+      );
 
       const evt = {
         type: "CHAT_MESSAGE",
@@ -498,15 +618,109 @@ io.on("connection", (socket) => {
           messageId: chatMessage.id,
           userId: socket.id,
           username: (user as any).username,
-          message,
+          message: sanitizedMessage,
           createdAt: chatMessage.createdAt.toISOString(),
         },
       };
       
       io.to(lotId).emit("CHAT_MESSAGE", evt);
-      console.log(`[Chat] ${(user as any).username}: ${message}`);
+      console.log(`[Chat] ${(user as any).username}: ${sanitizedMessage}`);
     } catch (error) {
       console.error("[Chat] Error:", error);
+    }
+  });
+
+  socket.on("vote_artist", async ({ lotId = "seed-lot-1", artistId, username }) => {
+    try {
+      if (!artistId) {
+        socket.emit("error", { message: "Artist ID is required", code: "INVALID_ARTIST" });
+        return;
+      }
+
+      const user = await getOrCreateUser(socket, username);
+      if (!user) throw new Error("User not resolved");
+
+      const voteKey = `${lotId}:${artistId}`;
+      if (!votes[voteKey]) votes[voteKey] = [];
+
+      const alreadyVoted = votes[voteKey].some((vote) => vote.userId === user.id);
+      if (alreadyVoted) {
+        socket.emit("error", { message: "You've already voted for this artist!", code: "ALREADY_VOTED" });
+        return;
+      }
+
+      const voteRecord = {
+        artistId,
+        userId: user.id,
+        username: (user as any).username || username || `User ${user.id.slice(0, 6)}`,
+        timestamp: Date.now(),
+      };
+
+      votes[voteKey].push(voteRecord);
+
+      const payload = {
+        type: "VOTE_CAST",
+        data: {
+          lotId,
+          artistId,
+          userId: voteRecord.userId,
+          username: voteRecord.username,
+          voteCount: votes[voteKey].length,
+          timestamp: voteRecord.timestamp,
+        },
+      };
+
+      io.to(lotId).emit("VOTE_CAST", payload);
+      console.log(`[Vote] ${voteRecord.username} voted for ${artistId} (lot ${lotId}) total=${votes[voteKey].length}`);
+    } catch (error) {
+      console.error("[Vote] Error:", error);
+      socket.emit("error", { message: "Failed to cast vote" });
+    }
+  });
+
+  socket.on("get_votes", ({ lotId = "seed-lot-1" }) => {
+    try {
+      ["artist_1", "artist_2", "artist_3", "artist_4"].forEach((artistId) => {
+        const voteKey = `${lotId}:${artistId}`;
+        const artistVotes = votes[voteKey] || [];
+        socket.emit("votes_update", {
+          lotId,
+          artistId,
+          votes: artistVotes,
+          count: artistVotes.length,
+        });
+      });
+    } catch (error) {
+      console.error("[Vote] Error sending vote counts:", error);
+    }
+  });
+
+  socket.on("clear_votes", ({ lotId = "seed-lot-1" }) => {
+    try {
+      let cleared = false;
+      ["artist_1", "artist_2", "artist_3", "artist_4"].forEach((artistId) => {
+        const voteKey = `${lotId}:${artistId}`;
+        if (votes[voteKey] && votes[voteKey].length) {
+          votes[voteKey] = [];
+          cleared = true;
+        }
+      });
+
+      if (cleared) {
+        io.to(lotId).emit("VOTES_CLEARED", { lotId });
+        ["artist_1", "artist_2", "artist_3", "artist_4"].forEach((artistId) => {
+          io.to(lotId).emit("votes_update", {
+            lotId,
+            artistId,
+            votes: [],
+            count: 0,
+          });
+        });
+        console.log(`[Vote] Votes cleared for lot ${lotId}`);
+      }
+    } catch (error) {
+      console.error("[Vote] Error clearing votes:", error);
+      socket.emit("error", { message: "Failed to clear votes" });
     }
   });
 

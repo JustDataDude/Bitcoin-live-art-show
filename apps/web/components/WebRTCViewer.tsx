@@ -105,18 +105,32 @@ export function WebRTCViewer({ streamId, label }: WebRTCViewerProps) {
 		});
 
 		return () => {
+			// Clean up peer connection
 			if (peerRef.current) {
 				peerRef.current.close();
+				peerRef.current = null;
 			}
-			// Clear video on unmount
+			
+			// Clean up video stream
 			if (videoRef.current) {
 				const stream = videoRef.current.srcObject as MediaStream;
 				if (stream) {
-					stream.getTracks().forEach(track => track.stop());
+					stream.getTracks().forEach(track => {
+						track.stop();
+						stream.removeTrack(track);
+					});
 				}
 				videoRef.current.srcObject = null;
 				videoRef.current.load();
 			}
+			
+			// Remove all socket listeners
+			socket.off("webrtc-offer");
+			socket.off("webrtc-ice-candidate");
+			socket.off("stream-available");
+			socket.off("stream-unavailable");
+			
+			// Disconnect socket
 			socket.disconnect();
 		};
 	}, [streamId]);

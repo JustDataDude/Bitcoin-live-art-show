@@ -157,8 +157,31 @@ export function WebRTCPublisher({ streamId, streamType, label }: WebRTCPublisher
 		}, 5000); // Clean up every 5 seconds
 
 		return () => {
+			// Clear cleanup interval
 			clearInterval(cleanupInterval);
+			
+			// Stop streaming and clean up all peer connections
 			stopStreaming();
+			
+			// Close all peer connections
+			for (const [viewerId, peer] of peersRef.current.entries()) {
+				try {
+					peer.close();
+				} catch (error) {
+					console.error(`[WebRTC Publisher ${streamId}] Error closing peer ${viewerId}:`, error);
+				}
+			}
+			peersRef.current.clear();
+			
+			// Remove all socket listeners
+			socket.off("viewer-joined");
+			socket.off("viewer-left");
+			socket.off("webrtc-answer");
+			socket.off("webrtc-ice-candidate");
+			socket.off("viewer-count");
+			socket.off("stop_all_streams");
+			
+			// Disconnect socket
 			socket.disconnect();
 		};
 	}, [streamId]);

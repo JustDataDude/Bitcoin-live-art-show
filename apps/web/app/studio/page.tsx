@@ -5,6 +5,136 @@ import { Button } from "@live-art/ui";
 import { WebRTCPublisher } from "../../components/WebRTCPublisher";
 import io from "socket.io-client";
 
+interface StreamLink {
+	streamId: string;
+	type: "artist" | "host";
+	url: string;
+	token: string;
+}
+
+function StreamingLinksGenerator() {
+	const [links, setLinks] = useState<Map<string, StreamLink>>(new Map());
+	const [generating, setGenerating] = useState<string | null>(null);
+
+	const generateLink = async (streamId: string, type: "artist" | "host") => {
+		setGenerating(streamId);
+		try {
+			const response = await fetch("/api/stream/generate", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ streamId, type }),
+			});
+
+			if (!response.ok) {
+				throw new Error("Failed to generate link");
+			}
+
+			const data = await response.json();
+			setLinks(prev => new Map(prev.set(streamId, data)));
+		} catch (error) {
+			console.error("Error generating link:", error);
+			alert("Failed to generate streaming link");
+		} finally {
+			setGenerating(null);
+		}
+	};
+
+	const copyLink = (url: string) => {
+		navigator.clipboard.writeText(url);
+		alert("Link copied to clipboard!");
+	};
+
+	return (
+		<div className="glass rounded-xl p-4 border border-purple-500/30 mb-4">
+			<h3 className="text-lg font-semibold text-white mb-4">🔗 Generate Streaming Links</h3>
+			
+			<div className="space-y-3">
+				{/* Host Link */}
+				<div className="flex items-center gap-3 p-3 bg-slate-800/50 rounded-lg">
+					<div className="flex-1">
+						<span className="text-sm font-medium text-white">🎤 Host Stream</span>
+						<p className="text-xs text-slate-400">host_1</p>
+					</div>
+					{links.has("host_1") ? (
+						<div className="flex items-center gap-2 flex-1">
+							<input
+								type="text"
+								value={links.get("host_1")!.url}
+								readOnly
+								className="flex-1 bg-slate-900 border border-slate-700 rounded px-3 py-2 text-xs text-white font-mono"
+							/>
+							<Button
+								onClick={() => copyLink(links.get("host_1")!.url)}
+								variant="secondary"
+								className="text-xs px-3 py-2"
+							>
+								📋 Copy
+							</Button>
+							<Button
+								onClick={() => generateLink("host_1", "host")}
+								variant="secondary"
+								className="text-xs px-3 py-2"
+							>
+								🔄 Regenerate
+							</Button>
+						</div>
+					) : (
+						<Button
+							onClick={() => generateLink("host_1", "host")}
+							disabled={generating === "host_1"}
+							className="bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 text-white text-xs px-4 py-2"
+						>
+							{generating === "host_1" ? "Generating..." : "Generate Link"}
+						</Button>
+					)}
+				</div>
+
+				{/* Artist Links */}
+				{["artist_1", "artist_2", "artist_3", "artist_4"].map((streamId) => (
+					<div key={streamId} className="flex items-center gap-3 p-3 bg-slate-800/50 rounded-lg">
+						<div className="flex-1">
+							<span className="text-sm font-medium text-white">🎨 {streamId.replace("_", " ").replace(/\b\w/g, l => l.toUpperCase())}</span>
+							<p className="text-xs text-slate-400">{streamId}</p>
+						</div>
+						{links.has(streamId) ? (
+							<div className="flex items-center gap-2 flex-1">
+								<input
+									type="text"
+									value={links.get(streamId)!.url}
+									readOnly
+									className="flex-1 bg-slate-900 border border-slate-700 rounded px-3 py-2 text-xs text-white font-mono"
+								/>
+								<Button
+									onClick={() => copyLink(links.get(streamId)!.url)}
+									variant="secondary"
+									className="text-xs px-3 py-2"
+								>
+									📋 Copy
+								</Button>
+								<Button
+									onClick={() => generateLink(streamId, "artist")}
+									variant="secondary"
+									className="text-xs px-3 py-2"
+								>
+									🔄 Regenerate
+								</Button>
+							</div>
+						) : (
+							<Button
+								onClick={() => generateLink(streamId, "artist")}
+								disabled={generating === streamId}
+								className="bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 text-white text-xs px-4 py-2"
+							>
+								{generating === streamId ? "Generating..." : "Generate Link"}
+							</Button>
+						)}
+					</div>
+				))}
+			</div>
+		</div>
+	);
+}
+
 export default function StudioPage() {
 	const [starting, setStarting] = useState(false);
 	const [ending, setEnding] = useState(false);
@@ -15,6 +145,10 @@ export default function StudioPage() {
 	const [topBid, setTopBid] = useState<any>(null);
 	const [messages, setMessages] = useState<any[]>([]);
 	const [blockedUsers, setBlockedUsers] = useState<Set<string>>(new Set());
+	const [votes, setVotes] = useState<Record<string, { count: number; voters: { userId: string; username: string; timestamp: number }[] }>>({});
+
+	const lotId = "seed-lot-1";
+	const totalVotes = Object.values(votes).reduce((acc, entry) => acc + (entry?.count ?? 0), 0);
 
 	// Initialize socket connection
 	useEffect(() => {
@@ -28,6 +162,8 @@ export default function StudioPage() {
 			reconnectionAttempts: 5,
 		});
 		setSocket(socketInstance);
+		socketInstance.emit("join_lot", { lotId });
+		socketInstance.emit("get_votes", { lotId });
 
 		socketInstance.on("BID_PLACED", (e: any) => {
 			const data = e.data;
@@ -55,7 +191,13 @@ export default function StudioPage() {
 		});
 
 		socketInstance.on("message_deleted", (e: any) => {
-			setMessages((prev) => prev.filter(msg => msg.messageId !== e.messageId));
+			const deletedId = e.messageId ?? e.data?.messageId;
+			if (deletedId === undefined || deletedId === null) return;
+			const deletedIdStr = String(deletedId);
+			setMessages((prev) => prev.filter(msg => {
+				if (msg.messageId === undefined) return true;
+				return String(msg.messageId) !== deletedIdStr;
+			}));
 		});
 
 		socketInstance.on("user_banned", (e: any) => {
@@ -71,45 +213,95 @@ export default function StudioPage() {
 			});
 		});
 
+		socketInstance.on("VOTE_CAST", (e: any) => {
+			const { artistId, userId, username: voterName, voteCount } = e.data || {};
+			if (!artistId) return;
+			setVotes((prev) => ({
+				...prev,
+				[artistId]: {
+					count: voteCount ?? (prev[artistId]?.count ?? 0) + 1,
+					voters: [
+						{ userId, username: voterName, timestamp: Date.now() },
+						...(prev[artistId]?.voters ?? []),
+					],
+				},
+			}));
+		});
+
+		socketInstance.on("votes_update", (e: any) => {
+			const { artistId, count, votes: voteList } = e || {};
+			if (!artistId) return;
+			setVotes((prev) => ({
+				...prev,
+				[artistId]: {
+					count: typeof count === "number" ? count : (Array.isArray(voteList) ? voteList.length : prev[artistId]?.count ?? 0),
+					voters: Array.isArray(voteList) ? voteList : prev[artistId]?.voters ?? [],
+				},
+			}));
+		});
+
+		socketInstance.on("VOTES_CLEARED", () => {
+			setVotes({});
+		});
+
 		return () => {
+			// Remove all socket event listeners
+			socketInstance.off("BID_PLACED");
+			socketInstance.off("TIP_RECEIVED");
+			socketInstance.off("CHAT_MESSAGE");
+			socketInstance.off("user_banned");
+			socketInstance.off("user_unbanned");
+			socketInstance.off("message_deleted");
+			socketInstance.off("VOTE_CAST");
+			socketInstance.off("votes_update");
+			socketInstance.off("VOTES_CLEARED");
+			
+			// Disconnect socket
 			socketInstance.disconnect();
 		};
 	}, []);
 
 	// Fetch initial lot and show data
 	useEffect(() => {
+		let interval: NodeJS.Timeout | null = null;
+		let isMounted = true;
+		
 		const fetchData = async () => {
+			if (!isMounted) return;
+			
 			try {
 				const [lotRes, showRes] = await Promise.all([
 					fetch("/api/lots/seed-lot-1"),
 					fetch("/api/shows/seed-show-1"),
 				]);
 				
-				if (lotRes.ok) {
+				if (lotRes.ok && isMounted) {
 					const lotData = await lotRes.json();
 					setLot(lotData);
 					
-					// Get current bids for this lot
-					const bidsRes = await fetch("/api/lots/seed-lot-1/bids");
-					if (bidsRes.ok) {
-						const bids = await bidsRes.json();
+					// Get current bids for this lot (using paginated API)
+					const bidsRes = await fetch("/api/lots/seed-lot-1/bids?limit=50");
+					if (bidsRes.ok && isMounted) {
+						const data = await bidsRes.json();
+						const bids = data.bids || data; // Support both old and new format
 						setCurrentBids(bids);
-						if (bids.length > 0) {
+						if (bids.length > 0 && isMounted) {
 							// Sort bids by amount to get top bid
-							const sortedBids = [...bids].sort((a, b) => b.amountUsd - a.amountUsd);
+							const sortedBids = [...bids].sort((a: any, b: any) => b.amountUsd - a.amountUsd);
 							setTopBid(sortedBids[0]);
 						}
 					}
 
-					// Get chat messages for this lot
-					const messagesRes = await fetch("/api/lots/seed-lot-1/messages");
-					if (messagesRes.ok) {
-						const msgs = await messagesRes.json();
+					// Get chat messages for this lot (using paginated API)
+					const messagesRes = await fetch("/api/lots/seed-lot-1/messages?limit=100");
+					if (messagesRes.ok && isMounted) {
+						const data = await messagesRes.json();
+						const msgs = data.messages || data; // Support both old and new format
 						setMessages(msgs);
 					}
 				}
 				
-				if (showRes.ok) {
+				if (showRes.ok && isMounted) {
 					const showData = await showRes.json();
 					setShowStatus(showData);
 				}
@@ -119,8 +311,14 @@ export default function StudioPage() {
 		};
 
 		fetchData();
-		const interval = setInterval(fetchData, 5000); // Refresh every 5 seconds
-		return () => clearInterval(interval);
+		interval = setInterval(fetchData, 5000); // Refresh every 5 seconds
+		
+		return () => {
+			isMounted = false;
+			if (interval) {
+				clearInterval(interval);
+			}
+		};
 	}, []);
 
 	async function startLot() {
@@ -276,9 +474,15 @@ export default function StudioPage() {
 		}
 	}
 
-	function deleteMessage(messageId: number) {
+	function deleteMessage(messageId: string | number) {
 		if (socket) {
-			socket.emit("delete_message", { messageId });
+			socket.emit("delete_message", { messageId, lotId });
+		}
+	}
+
+	function clearVotes() {
+		if (socket) {
+			socket.emit("clear_votes", { lotId });
 		}
 	}
 
@@ -416,6 +620,54 @@ export default function StudioPage() {
 			</div>
 			
 			{/* Lot Controls */}
+			<div className="glass p-4 rounded-lg border border-purple-500/30">
+				<div className="flex items-center justify-between mb-4">
+					<h2 className="text-xl font-semibold text-white flex items-center gap-2">
+						<span className="text-2xl">🗳️</span> Live Voting
+					</h2>
+					<Button
+						variant="secondary"
+						size="sm"
+						onClick={clearVotes}
+						disabled={!socket || totalVotes === 0}
+						className={!socket || totalVotes === 0 ? "opacity-50 cursor-not-allowed" : ""}
+					>
+						Clear Votes
+					</Button>
+				</div>
+				<div className="grid gap-2">
+					{["artist_1", "artist_2", "artist_3", "artist_4"].map((artistId) => {
+						const artistNum = artistId.split("_")[1];
+						const voteData = votes[artistId];
+						const count = voteData?.count ?? 0;
+						const topVoters = (voteData?.voters || []).slice(0, 3);
+
+						return (
+							<div key={artistId} className="flex items-center justify-between px-3 py-2 rounded-xl border border-purple-500/40 bg-purple-500/10">
+								<div>
+									<div className="text-sm font-semibold text-white">Artist {artistNum}</div>
+									{topVoters.length > 0 && (
+										<div className="text-xs text-purple-200">
+											Recent votes: {topVoters.map(voter => voter.username || voter.userId.slice(0, 6)).join(", ")}
+										</div>
+									)}
+								</div>
+								<div className="flex items-center gap-2 text-white">
+									<span className="text-lg">❤️</span>
+									<span className="font-bold text-white">{count}</span>
+								</div>
+							</div>
+						);
+					})}
+					{totalVotes === 0 && (
+						<div className="text-sm text-purple-200 bg-purple-500/10 border border-purple-500/30 rounded-xl px-3 py-2">
+							No votes yet. They will appear here once viewers start voting.
+						</div>
+					)}
+				</div>
+			</div>
+
+			{/* Lot Controls */}
 			<div className="glass p-4 rounded-lg border border-blue-500/20">
 				<h2 className="text-xl font-semibold mb-4">🎯 Lot Controls</h2>
 				<div className="flex gap-2 flex-wrap">
@@ -455,8 +707,11 @@ export default function StudioPage() {
 
 			<div className="space-y-4">
 				<h2 className="text-xl font-semibold">📹 Live Streaming</h2>
-				<p className="text-sm text-neutral-400">Start your webcam or screen share below. Viewers on the show page will see your streams in real-time.</p>
+				<p className="text-sm text-neutral-400">Generate custom links to share with artists and host. Each link provides secure access to stream.</p>
 				
+				{/* Streaming Links Generator */}
+				<StreamingLinksGenerator />
+
 				<div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
 					{/* Host Webcam */}
 					<WebRTCPublisher 
@@ -489,7 +744,7 @@ export default function StudioPage() {
 				</div>
 
 				<div className="p-4 bg-blue-900/20 border border-blue-700 rounded text-sm text-blue-400">
-					💡 <strong>Tip:</strong> You can run multiple streams at once! Open this page in different browser tabs to control each stream independently.
+					💡 <strong>Tip:</strong> Share the generated links with artists and host. They can use these links to stream from their own devices.
 				</div>
 			</div>
 

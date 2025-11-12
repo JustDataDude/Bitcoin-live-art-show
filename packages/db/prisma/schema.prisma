@@ -64,6 +64,8 @@ model Bid {
   
   @@index([lotId])
   @@index([userId])
+  @@index([lotId, createdAt])
+  @@index([createdAt])
 }
 
 model Tip {
@@ -80,6 +82,8 @@ model Tip {
   
   @@index([lotId])
   @@index([userId])
+  @@index([lotId, createdAt])
+  @@index([createdAt])
 }
 
 model Payment {
@@ -115,6 +119,8 @@ model ChatMessage {
   
   @@index([lotId])
   @@index([userId])
+  @@index([lotId, createdAt])
+  @@index([createdAt])
 }
 
 model Fee {

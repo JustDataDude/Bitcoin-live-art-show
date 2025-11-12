@@ -3,6 +3,9 @@
 import { Button } from "@live-art/ui";
 import { useAccount, useConnect, useDisconnect } from "wagmi";
 import { useEffect, useState } from "react";
+import { Tooltip } from "./Tooltip";
+import { copyToClipboard } from "../utils/clipboard";
+import { showToast } from "./Toast";
 
 // Mock balance; in real app call an RPC or indexer for ERC20 balance
 async function mockFetchUsdcBalance(_address: string): Promise<string> {
@@ -50,11 +53,30 @@ export function WalletConnect() {
     );
   }
 
+  if (!address) {
+    return null;
+  }
+
   return (
     <div className="flex items-center gap-3 text-sm">
-      <span className="px-2 py-1 rounded bg-neutral-800 border border-neutral-700">{address}</span>
+      <Tooltip content={`Click to copy: ${address}`} position="top">
+        <button
+          onClick={async () => {
+            const success = await copyToClipboard(address);
+            if (success) {
+              showToast("Address copied to clipboard!", "success");
+            } else {
+              showToast("Failed to copy address", "error");
+            }
+          }}
+          className="px-2 py-1 rounded bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 transition-colors font-mono text-xs"
+          aria-label="Copy address to clipboard"
+        >
+          {address.slice(0, 6)}...{address.slice(-4)}
+        </button>
+      </Tooltip>
       <span className="text-neutral-400">USDC (mock): ${usdc}</span>
-      <Button variant="secondary" onClick={() => disconnect()}>Disconnect</Button>
+      <Button variant="secondary" onClick={() => disconnect()} aria-label="Disconnect wallet">Disconnect</Button>
     </div>
   );
 }

@@ -2,11 +2,17 @@
 
 import { Button } from "@live-art/ui";
 import { useEffect, useState } from "react";
+import { BitcoinNetwork, DEFAULT_BITCOIN_NETWORK, getNetworkDisplayName } from "../utils/bitcoin";
+import { getAddressBalance } from "../utils/bitcoinTransactions";
+import { Tooltip } from "./Tooltip";
+import { copyToClipboard } from "../utils/clipboard";
+import { showToast } from "./Toast";
 
 interface BitcoinWallet {
   address: string;
   publicKey: string;
   balance: number;
+  network?: BitcoinNetwork;
 }
 
 declare global {
@@ -25,6 +31,8 @@ export function BitcoinWalletConnect() {
   const [wallet, setWallet] = useState<BitcoinWallet | null>(null);
   const [isConnecting, setIsConnecting] = useState(false);
   const [availableWallets, setAvailableWallets] = useState<string[]>([]);
+  const [network, setNetwork] = useState<BitcoinNetwork>(DEFAULT_BITCOIN_NETWORK);
+  const [walletType, setWalletType] = useState<'unisat' | 'xverse' | 'magicEden' | 'okx' | null>(null);
 
   useEffect(() => {
     // Delay detection to allow wallet extensions to inject
@@ -77,13 +85,31 @@ export function BitcoinWalletConnect() {
       const balance = await window.unisat.getBalance();
       console.log('✅ [Unisat] Balance:', balance);
       
+      // Get balance from network for more accurate display
+      const networkBalance = await getAddressBalance(accounts[0], network);
+      
       setWallet({
         address: accounts[0],
         publicKey,
-        balance: balance.total,
+        balance: networkBalance || balance.total,
+        network,
       });
-      window.dispatchEvent(new CustomEvent('wallet:connected', { detail: { chain: 'BTC', address: accounts[0] } }));
+      setWalletType('unisat');
+      window.dispatchEvent(new CustomEvent('wallet:connected', { 
+        detail: { chain: 'BTC', address: accounts[0], network, walletType: 'unisat' } 
+      }));
       (window as any).__lastBtcAddress = accounts[0];
+      (window as any).__lastBtcNetwork = network;
+      (window as any).__lastBtcWalletType = 'unisat';
+      
+      // Start balance polling
+      const balanceInterval = setInterval(async () => {
+        const updatedBalance = await getAddressBalance(accounts[0], network);
+        setWallet(prev => prev ? { ...prev, balance: updatedBalance } : null);
+      }, 30000); // Update every 30 seconds
+      
+      // Store interval ID for cleanup
+      (window as any).__btcBalanceInterval = balanceInterval;
       
       console.log('✅ [Unisat] Successfully connected:', accounts[0]);
     } catch (error) {
@@ -117,7 +143,7 @@ export function BitcoinWalletConnect() {
         '1. Click the Xverse extension icon (top-right corner)\n' +
         '2. If locked, unlock your wallet\n' +
         '3. Look for "Connected Sites" or "Connections"\n' +
-        '4. Add or approve this site: localhost:3000\n' +
+        `4. Add or approve this site: ${typeof window !== 'undefined' ? window.location.hostname : 'this site'}\n` +
         '5. Close the extension\n' +
         '6. Click the Xverse button here again\n\n' +
         'Click OK to continue...'
@@ -138,7 +164,7 @@ export function BitcoinWalletConnect() {
               purposes: ['payment'],
               message: 'Connect to Live Art',
               network: {
-                type: 'Mainnet',
+                type: network === 'mainnet' ? 'Mainnet' : 'Testnet',
               },
             },
             onFinish: (response: any) => {
@@ -160,13 +186,31 @@ export function BitcoinWalletConnect() {
         
         if (paymentAddr && paymentAddr.address) {
           console.log('✅ [Xverse] Successfully connected:', paymentAddr.address);
+          
+          // Get balance from network
+          const networkBalance = await getAddressBalance(paymentAddr.address, network);
+          
           setWallet({
             address: paymentAddr.address,
             publicKey: paymentAddr.publicKey || "",
-            balance: 0,
+            balance: networkBalance,
+            network,
           });
-          window.dispatchEvent(new CustomEvent('wallet:connected', { detail: { chain: 'BTC', address: paymentAddr.address } }));
+          setWalletType('xverse');
+          window.dispatchEvent(new CustomEvent('wallet:connected', { 
+            detail: { chain: 'BTC', address: paymentAddr.address, network, walletType: 'xverse' } 
+          }));
           (window as any).__lastBtcAddress = paymentAddr.address;
+          (window as any).__lastBtcNetwork = network;
+          (window as any).__lastBtcWalletType = 'xverse';
+          
+          // Start balance polling
+          const balanceInterval = setInterval(async () => {
+            const updatedBalance = await getAddressBalance(paymentAddr.address, network);
+            setWallet(prev => prev ? { ...prev, balance: updatedBalance } : null);
+          }, 30000);
+          (window as any).__btcBalanceInterval = balanceInterval;
+          
           return;
         } else {
           throw new Error('No address found - please authorize in Xverse extension first');
@@ -195,9 +239,15 @@ export function BitcoinWalletConnect() {
         address: result.address,
         publicKey: result.publicKey,
         balance: 0,
+        network,
       });
-      window.dispatchEvent(new CustomEvent('wallet:connected', { detail: { chain: 'BTC', address: result.address } }));
+      setWalletType('okx');
+      window.dispatchEvent(new CustomEvent('wallet:connected', { 
+        detail: { chain: 'BTC', address: result.address, network, walletType: 'okx' } 
+      }));
       (window as any).__lastBtcAddress = result.address;
+      (window as any).__lastBtcNetwork = network;
+      (window as any).__lastBtcWalletType = 'okx';
     } catch (error) {
       console.error("OKX connection error:", error);
     } finally {
@@ -236,7 +286,7 @@ export function BitcoinWalletConnect() {
           'Magic Eden requires manual authorization:\n\n' +
           '1. Click the Magic Eden extension icon (top-right of browser)\n' +
           '2. Click "Connect" or "Authorize"\n' +
-          '3. Select this site (localhost:3000)\n' +
+          `3. Select this site (${typeof window !== 'undefined' ? window.location.hostname : 'this site'})\n` +
           '4. Approve the connection\n' +
           '5. Click the Magic Eden button again\n\n' +
           'This only needs to be done once.'
@@ -260,11 +310,30 @@ export function BitcoinWalletConnect() {
         
         if (address) {
           console.log('✅ [Magic Eden] Successfully connected:', address);
+          
+          // Get balance from network
+          const networkBalance = await getAddressBalance(address, network);
+          
           setWallet({
             address: address,
             publicKey: "",
-            balance: 0,
+            balance: networkBalance,
+            network,
           });
+          setWalletType('magicEden');
+          window.dispatchEvent(new CustomEvent('wallet:connected', { 
+            detail: { chain: 'BTC', address: address, network, walletType: 'magicEden' } 
+          }));
+          (window as any).__lastBtcAddress = address;
+          (window as any).__lastBtcNetwork = network;
+          (window as any).__lastBtcWalletType = 'magicEden';
+          
+          // Start balance polling
+          const balanceInterval = setInterval(async () => {
+            const updatedBalance = await getAddressBalance(address, network);
+            setWallet(prev => prev ? { ...prev, balance: updatedBalance } : null);
+          }, 30000);
+          (window as any).__btcBalanceInterval = balanceInterval;
         } else {
           throw new Error('No address returned from Magic Eden wallet');
         }
@@ -285,8 +354,17 @@ export function BitcoinWalletConnect() {
   };
 
   const disconnect = () => {
+    // Clear balance polling
+    if ((window as any).__btcBalanceInterval) {
+      clearInterval((window as any).__btcBalanceInterval);
+      (window as any).__btcBalanceInterval = undefined;
+    }
+    
     setWallet(null);
+    setWalletType(null);
     (window as any).__lastBtcAddress = undefined;
+    (window as any).__lastBtcNetwork = undefined;
+    (window as any).__lastBtcWalletType = undefined;
     const evt = new CustomEvent('wallet:disconnected', { detail: { chain: 'BTC' } });
     window.dispatchEvent(evt);
   };
@@ -294,16 +372,53 @@ export function BitcoinWalletConnect() {
   if (wallet) {
     const address = wallet.address;
     return (
-      <div className="flex items-center gap-3 text-sm">
-        <span className="px-2 py-1 rounded bg-orange-900/20 border border-orange-700">
-          ₿ {address.slice(0, 6)}...{address.slice(-4)}
-        </span>
-        {wallet.balance > 0 && (
-          <span className="text-neutral-400">{(wallet.balance / 100000000).toFixed(8)} BTC</span>
-        )}
-        <Button variant="secondary" onClick={disconnect}>
-          Disconnect
-        </Button>
+      <div className="flex flex-col gap-2">
+        <div className="flex items-center gap-3 text-sm">
+          <Tooltip content={`Click to copy: ${address}`} position="top">
+            <button
+              onClick={async () => {
+                const success = await copyToClipboard(address);
+                if (success) {
+                  showToast("Address copied to clipboard!", "success");
+                } else {
+                  showToast("Failed to copy address", "error");
+                }
+              }}
+              className="px-2 py-1 rounded bg-orange-900/20 hover:bg-orange-900/30 border border-orange-700 transition-colors font-mono"
+              aria-label="Copy address to clipboard"
+            >
+              ₿ {address.slice(0, 6)}...{address.slice(-4)}
+            </button>
+          </Tooltip>
+          {wallet.balance > 0 && (
+            <span className="text-neutral-400">{(wallet.balance / 100000000).toFixed(8)} BTC</span>
+          )}
+          <Button variant="secondary" onClick={disconnect} className="text-xs px-2 py-1" aria-label="Disconnect wallet">
+            Disconnect
+          </Button>
+        </div>
+        <div className="flex items-center gap-2 text-xs">
+          <span className="text-slate-400">Network:</span>
+          <select
+            value={network}
+            onChange={(e) => {
+              const newNetwork = e.target.value as BitcoinNetwork;
+              setNetwork(newNetwork);
+              // Reconnect with new network if wallet is connected
+              if (wallet) {
+                disconnect();
+                setTimeout(() => {
+                  // User will need to reconnect manually
+                }, 100);
+              }
+            }}
+            className="bg-slate-800 border border-slate-600 rounded px-2 py-1 text-white text-xs"
+          >
+            <option value="mainnet">Mainnet</option>
+            <option value="testnet">Testnet</option>
+          </select>
+          <span className="text-slate-500 text-xs">({getNetworkDisplayName(network)})</span>
+        </div>
       </div>
     );
   }
@@ -334,41 +449,56 @@ export function BitcoinWalletConnect() {
   };
 
   return (
-    <div className="flex flex-wrap items-center gap-2">
-      {wallet ? (
-        <>
-          <div className="text-sm px-3 py-1 bg-green-100 text-green-800 rounded">
-            {((wallet as BitcoinWallet).address || '').slice(0, 6)}...{((wallet as BitcoinWallet).address || '').slice(-4)}
-          </div>
-          <Button onClick={disconnect} variant="secondary">
-            Disconnect
-          </Button>
-        </>
-      ) : (
-        <>
-          <Button 
-            onClick={() => handleWalletClick("Unisat", connectUnisat)} 
-            disabled={isConnecting}
-            variant={availableWallets.includes("Unisat") ? "primary" : "secondary"}
+    <div className="flex flex-col gap-2">
+      {!wallet && (
+        <div className="flex items-center gap-2 mb-2">
+          <span className="text-xs text-slate-400">Network:</span>
+          <select
+            value={network}
+            onChange={(e) => setNetwork(e.target.value as BitcoinNetwork)}
+            className="bg-slate-800 border border-slate-600 rounded px-2 py-1 text-white text-xs"
           >
-            {isConnecting ? "Connecting..." : "Unisat"}
-          </Button>
-          <Button 
-            onClick={() => handleWalletClick("MagicEden", connectMagicEden)} 
-            disabled={isConnecting}
-            variant={availableWallets.includes("MagicEden") ? "primary" : "secondary"}
-          >
-            {isConnecting ? "Connecting..." : "Magic Eden"}
-          </Button>
-          <Button 
-            onClick={() => handleWalletClick("Xverse", connectXverse)} 
-            disabled={isConnecting}
-            variant={availableWallets.includes("Xverse") ? "primary" : "secondary"}
-          >
-            {isConnecting ? "Connecting..." : "Xverse"}
-          </Button>
-        </>
+            <option value="mainnet">Mainnet</option>
+            <option value="testnet">Testnet</option>
+          </select>
+        </div>
       )}
+      <div className="flex flex-wrap items-center gap-2">
+        {wallet ? (
+          <>
+            <div className="text-sm px-3 py-1 bg-green-100 text-green-800 rounded">
+              {((wallet as BitcoinWallet).address || '').slice(0, 6)}...{((wallet as BitcoinWallet).address || '').slice(-4)}
+            </div>
+            <Button onClick={disconnect} variant="secondary">
+              Disconnect
+            </Button>
+          </>
+        ) : (
+          <>
+            <Button 
+              onClick={() => handleWalletClick("Unisat", connectUnisat)} 
+              disabled={isConnecting}
+              variant={availableWallets.includes("Unisat") ? "primary" : "secondary"}
+            >
+              {isConnecting ? "Connecting..." : "Unisat"}
+            </Button>
+            <Button 
+              onClick={() => handleWalletClick("MagicEden", connectMagicEden)} 
+              disabled={isConnecting}
+              variant={availableWallets.includes("MagicEden") ? "primary" : "secondary"}
+            >
+              {isConnecting ? "Connecting..." : "Magic Eden"}
+            </Button>
+            <Button 
+              onClick={() => handleWalletClick("Xverse", connectXverse)} 
+              disabled={isConnecting}
+              variant={availableWallets.includes("Xverse") ? "primary" : "secondary"}
+            >
+              {isConnecting ? "Connecting..." : "Xverse"}
+            </Button>
+          </>
+        )}
+      </div>
     </div>
   );
 }

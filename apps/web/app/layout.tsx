@@ -2,16 +2,18 @@ import "./globals.css";
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import { Web3Provider } from "./providers";
+import dynamic from "next/dynamic";
+
+const ToastContainer = dynamic(() => import("../components/Toast").then(mod => ({ default: mod.ToastContainer })), {
+	ssr: false,
+});
 
 export const metadata: Metadata = {
-	title: "Live Art - Crypto Art Auction",
+	title: "1 of 1's Game Show - Live Art Auction",
 	description: "Live crypto art auction platform",
 	icons: {
-		icon: [
-			{
-				url: "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎨</text></svg>",
-			},
-		],
+		icon: "/logo.png",
+		apple: "/logo.png",
 	},
 };
 
@@ -19,7 +21,10 @@ export default function RootLayout({ children }: { children: ReactNode }) {
 	return (
 		<html lang="en" suppressHydrationWarning>
 			<body className="min-h-screen antialiased" suppressHydrationWarning>
-				<Web3Provider>{children}</Web3Provider>
+				<Web3Provider>
+					{children}
+					<ToastContainer />
+				</Web3Provider>
 			</body>
 		</html>
 	);

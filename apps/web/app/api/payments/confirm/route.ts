@@ -5,9 +5,28 @@ import { QUEUES } from "@live-art/config";
 
 export async function POST(req: Request) {
 	const body = await req.json();
-	const { lotId, payerId, amountUsd, chain = "BASE_SEPOLIA" } = body;
+	const { lotId, payerId, amountUsd, chain = "BASE_SEPOLIA", network, txHash } = body;
+	
+	// Determine chain string for Bitcoin networks
+	let chainString = chain;
+	if (chain?.startsWith("BITCOIN_")) {
+		chainString = chain; // Already formatted
+	} else if (network) {
+		chainString = `BITCOIN_${network.toUpperCase()}`;
+	}
+	
+	// Use provided txHash or generate mock
+	const finalTxHash = txHash || (chainString.startsWith("BITCOIN_") ? `btc-mock-tx-${Date.now()}` : "mock-tx-hash");
+	
 	const payment = await prisma.payment.create({
-		data: { lotId, payerId, amountUsd, chain, status: "CONFIRMED", txHash: "mock-tx-hash" },
+		data: { 
+			lotId, 
+			payerId, 
+			amountUsd, 
+			chain: chainString, 
+			status: txHash ? "CONFIRMED" : "PENDING", // Pending if no txHash yet
+			txHash: finalTxHash
+		},
 	});
 
 	// Generate platform fee for the confirmed payment
