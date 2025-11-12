@@ -116,6 +116,7 @@ export default function ShowPage({ params }: { params: { id: string } }) {
 	const [showConfirmPayment, setShowConfirmPayment] = useState(false);
 	const [showConfirmBid, setShowConfirmBid] = useState(false);
 	const [pendingBidAmount, setPendingBidAmount] = useState<number | null>(null);
+	const [artistNames, setArtistNames] = useState<Record<string, string>>({});
 
 	const lotId = "seed-lot-1";
 
@@ -202,6 +203,21 @@ export default function ShowPage({ params }: { params: { id: string } }) {
 			});
 		});
 		
+		// Listen for artist name updates
+		manager.on("artist_name_set", (e: any) => {
+			console.log("[Show Page] Artist name set event received:", e);
+			// The server emits the data directly, not wrapped in a data property
+			const streamId = e?.streamId || e?.data?.streamId;
+			const artistName = e?.artistName || e?.data?.artistName;
+			if (streamId && artistName) {
+				console.log(`[Show Page] Updating artist name: ${streamId} -> ${artistName}`);
+				setArtistNames((prev) => ({
+					...prev,
+					[streamId]: artistName,
+				}));
+			}
+		});
+
 		// Handle errors from server
 		manager.on("error", (e: any) => {
 			console.error("[Socket] Server error:", e);
@@ -954,20 +970,26 @@ export default function ShowPage({ params }: { params: { id: string } }) {
 					</div>
 				</div>
 			)}
-			<header className="md:col-span-3 space-y-6">
+			<header className="md:col-span-3 space-y-3">
 				{/* Logo */}
-				<div className="flex justify-center pb-4">
-					<Logo size="lg" />
+				<div className="flex justify-center pb-2">
+					<div className="w-72 h-72">
+						<img
+							src="/logo.png"
+							alt="1 of 1's Game Show Logo"
+							className="object-contain w-full h-full bg-transparent"
+						/>
+					</div>
 				</div>
 				
 				{/* Title Section */}
-				<div className="text-center py-4">
+				<div className="text-center py-2">
 					<h1 className="text-5xl font-bold gradient-text mb-2">1 of 1's Game Show</h1>
 					<p className="text-slate-400 text-lg">Live Crypto Art Auction Experience</p>
 				</div>
 
 				{/* Navigation */}
-				<nav className="flex justify-center gap-4 pb-2">
+				<nav className="flex justify-center gap-4 pb-1">
 					<Link 
 						href="/" 
 						className="px-4 py-2 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/20 transition-all"
@@ -1027,6 +1049,8 @@ export default function ShowPage({ params }: { params: { id: string } }) {
 							const voteData = votes[artistId];
 							const voteCount = voteData?.count ?? 0;
 							const isMyVote = myVote === artistId;
+							const customName = artistNames[artistId];
+							const displayName = customName || `Artist ${artistNum}`;
 
 							return (
 								<div key={artistId} className="group relative">
@@ -1037,13 +1061,13 @@ export default function ShowPage({ params }: { params: { id: string } }) {
 										className={`relative bg-black/40 rounded-2xl overflow-hidden border-2 aspect-video cursor-pointer transition-all ${
 											isMyVote ? "border-green-400/80 shadow-[0_0_20px_rgba(74,222,128,0.45)]" : "border-purple-500/50 hover:border-purple-400/80"
 										}`}
-										aria-label={`Vote for Artist ${artistNum}`}
+										aria-label={`Vote for ${displayName}`}
 									>
 										<div className="absolute inset-0 bg-gradient-to-br from-transparent via-purple-500/10 to-transparent opacity-0 group-hover:opacity-100 transition-opacity"></div>
 
 										<div className="absolute top-3 left-3 z-20 flex items-center gap-2 px-3 py-1.5 bg-black/60 backdrop-blur-sm rounded-full border border-white/10">
 											<div className="w-2 h-2 bg-red-500 rounded-full animate-pulse"></div>
-											<span className="text-xs font-semibold text-white">ARTIST {artistNum}</span>
+											<span className="text-xs font-semibold text-white">{customName ? customName.toUpperCase() : `ARTIST ${artistNum}`}</span>
 										</div>
 
 										<div className="absolute top-3 right-3 z-20 flex items-center gap-2 px-3 py-1.5 bg-purple-500/80 backdrop-blur-sm rounded-full border border-white/10">
@@ -1054,7 +1078,7 @@ export default function ShowPage({ params }: { params: { id: string } }) {
 											<span className="text-xs font-bold text-white">❤️ {voteCount} {voteCount === 1 ? "vote" : "votes"}</span>
 										</div>
 
-										<WebRTCViewer streamId={artistId as any} label={`Artist ${artistNum}`} />
+										<WebRTCViewer streamId={artistId as any} label={displayName} />
 									</div>
 								</div>
 							);
@@ -1200,6 +1224,8 @@ export default function ShowPage({ params }: { params: { id: string } }) {
 									{['artist_1', 'artist_2', 'artist_3', 'artist_4'].map((artistId) => {
 										const artistNum = artistId.split('_')[1];
 										const isSelected = selectedArtistForTip === artistId;
+										const customName = artistNames[artistId];
+										const displayName = customName || `Artist ${artistNum}`;
 										return (
 											<button
 												key={artistId}
@@ -1209,9 +1235,9 @@ export default function ShowPage({ params }: { params: { id: string } }) {
 														? 'bg-gradient-to-r from-purple-500 to-pink-600 text-white border-2 border-purple-400'
 														: 'bg-purple-500/10 text-purple-300 border-2 border-purple-500/30 hover:bg-purple-500/20'
 												}`}
-												aria-label={`Select Artist ${artistNum}`}
+												aria-label={`Select ${displayName}`}
 											>
-												Artist {artistNum}
+												{displayName}
 											</button>
 										);
 									})}

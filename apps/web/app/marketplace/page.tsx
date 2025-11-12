@@ -206,13 +206,19 @@ export default function MarketplacePage() {
 	return (
 		<main className="min-h-screen p-6 max-w-7xl mx-auto">
 			{/* Header */}
-			<header className="mb-8">
+			<header className="mb-4">
 				{/* Logo */}
-				<div className="flex justify-center pb-6">
-					<Logo size="lg" />
+				<div className="flex justify-center pb-3">
+					<div className="w-72 h-72">
+						<img
+							src="/logo.png"
+							alt="1 of 1's Game Show Logo"
+							className="object-contain w-full h-full bg-transparent"
+						/>
+					</div>
 				</div>
 				
-				<div className="text-center py-6">
+				<div className="text-center py-3">
 					<h1 className="text-5xl font-bold gradient-text mb-2">🛒 Marketplace</h1>
 					<p className="text-slate-400 text-lg">Trade art pieces - Artists always get a cut</p>
 				</div>

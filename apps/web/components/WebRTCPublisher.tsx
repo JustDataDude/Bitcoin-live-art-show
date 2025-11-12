@@ -145,6 +145,13 @@ export function WebRTCPublisher({ streamId, streamType, label }: WebRTCPublisher
 			stopStreaming();
 		});
 
+		socket.on("stop_stream", ({ streamId: targetStreamId }) => {
+			if (targetStreamId === streamId) {
+				console.log(`[WebRTC Publisher ${streamId}] Received stop_stream command`);
+				stopStreaming();
+			}
+		});
+
 		// Periodic cleanup of closed peer connections
 		const cleanupInterval = setInterval(() => {
 			for (const [id, peer] of peersRef.current.entries()) {
@@ -180,6 +187,7 @@ export function WebRTCPublisher({ streamId, streamType, label }: WebRTCPublisher
 			socket.off("webrtc-ice-candidate");
 			socket.off("viewer-count");
 			socket.off("stop_all_streams");
+			socket.off("stop_stream");
 			
 			// Disconnect socket
 			socket.disconnect();

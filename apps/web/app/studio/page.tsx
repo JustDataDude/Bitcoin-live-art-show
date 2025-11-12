@@ -3,7 +3,8 @@
 import { useState, useEffect } from "react";
 import { Button } from "@live-art/ui";
 import { WebRTCPublisher } from "../../components/WebRTCPublisher";
-import io from "socket.io-client";
+import io, { Socket } from "socket.io-client";
+import Link from "next/link";
 
 interface StreamLink {
 	streamId: string;
@@ -12,9 +13,25 @@ interface StreamLink {
 	token: string;
 }
 
-function StreamingLinksGenerator() {
+function StreamingLinksGenerator({ artistNames }: { artistNames: Record<string, string> }) {
 	const [links, setLinks] = useState<Map<string, StreamLink>>(new Map());
 	const [generating, setGenerating] = useState<string | null>(null);
+	const [stopping, setStopping] = useState<string | null>(null);
+	const [socket, setSocket] = useState<any>(null);
+
+	// Initialize socket connection for stopping streams
+	useEffect(() => {
+		const wsUrl = process.env.NEXT_PUBLIC_WS_URL || "http://localhost:4001";
+		const socketInstance = io(wsUrl, {
+			transports: ["polling", "websocket"],
+			reconnection: true,
+		});
+		setSocket(socketInstance);
+
+		return () => {
+			socketInstance.disconnect();
+		};
+	}, []);
 
 	const generateLink = async (streamId: string, type: "artist" | "host") => {
 		setGenerating(streamId);
@@ -36,6 +53,37 @@ function StreamingLinksGenerator() {
 			alert("Failed to generate streaming link");
 		} finally {
 			setGenerating(null);
+		}
+	};
+
+	const stopStream = async (streamId: string) => {
+		if (!socket) {
+			alert("Not connected to server. Please refresh the page.");
+			return;
+		}
+
+		if (!confirm(`Are you sure you want to end the screen share for ${streamId}?`)) {
+			return;
+		}
+
+		setStopping(streamId);
+		try {
+			// Emit stop stream event
+			socket.emit("stop_stream", { streamId });
+			
+			// Also remove the link from the UI
+			setLinks(prev => {
+				const newLinks = new Map(prev);
+				newLinks.delete(streamId);
+				return newLinks;
+			});
+			
+			alert(`✅ Screen share ended for ${streamId}`);
+		} catch (error) {
+			console.error("Error stopping stream:", error);
+			alert("Failed to stop stream. Please try again.");
+		} finally {
+			setStopping(null);
 		}
 	};
 
@@ -71,6 +119,13 @@ function StreamingLinksGenerator() {
 								📋 Copy
 							</Button>
 							<Button
+								onClick={() => stopStream("host_1")}
+								disabled={stopping === "host_1"}
+								className="bg-gradient-to-r from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 text-white text-xs px-3 py-2 disabled:opacity-50"
+							>
+								{stopping === "host_1" ? "Stopping..." : "🛑 End Share"}
+							</Button>
+							<Button
 								onClick={() => generateLink("host_1", "host")}
 								variant="secondary"
 								className="text-xs px-3 py-2"
@@ -90,10 +145,14 @@ function StreamingLinksGenerator() {
 				</div>
 
 				{/* Artist Links */}
-				{["artist_1", "artist_2", "artist_3", "artist_4"].map((streamId) => (
+				{["artist_1", "artist_2", "artist_3", "artist_4"].map((streamId) => {
+					const artistNum = streamId.split("_")[1];
+					const customName = artistNames[streamId];
+					const displayName = customName || `Artist ${artistNum}`;
+					return (
 					<div key={streamId} className="flex items-center gap-3 p-3 bg-slate-800/50 rounded-lg">
 						<div className="flex-1">
-							<span className="text-sm font-medium text-white">🎨 {streamId.replace("_", " ").replace(/\b\w/g, l => l.toUpperCase())}</span>
+							<span className="text-sm font-medium text-white">🎨 {displayName}</span>
 							<p className="text-xs text-slate-400">{streamId}</p>
 						</div>
 						{links.has(streamId) ? (
@@ -110,6 +169,13 @@ function StreamingLinksGenerator() {
 									className="text-xs px-3 py-2"
 								>
 									📋 Copy
+								</Button>
+								<Button
+									onClick={() => stopStream(streamId)}
+									disabled={stopping === streamId}
+									className="bg-gradient-to-r from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 text-white text-xs px-3 py-2 disabled:opacity-50"
+								>
+									{stopping === streamId ? "Stopping..." : "🛑 End Share"}
 								</Button>
 								<Button
 									onClick={() => generateLink(streamId, "artist")}
@@ -129,7 +195,8 @@ function StreamingLinksGenerator() {
 							</Button>
 						)}
 					</div>
-				))}
+					);
+				})}
 			</div>
 		</div>
 	);
@@ -146,6 +213,7 @@ export default function StudioPage() {
 	const [messages, setMessages] = useState<any[]>([]);
 	const [blockedUsers, setBlockedUsers] = useState<Set<string>>(new Set());
 	const [votes, setVotes] = useState<Record<string, { count: number; voters: { userId: string; username: string; timestamp: number }[] }>>({});
+	const [artistNames, setArtistNames] = useState<Record<string, string>>({});
 
 	const lotId = "seed-lot-1";
 	const totalVotes = Object.values(votes).reduce((acc, entry) => acc + (entry?.count ?? 0), 0);
@@ -244,6 +312,20 @@ export default function StudioPage() {
 			setVotes({});
 		});
 
+		// Listen for artist name updates
+		socketInstance.on("artist_name_set", (e: any) => {
+			console.log("[Studio] Artist name set event received:", e);
+			const streamId = e?.streamId || e?.data?.streamId;
+			const artistName = e?.artistName || e?.data?.artistName;
+			if (streamId && artistName) {
+				console.log(`[Studio] Updating artist name: ${streamId} -> ${artistName}`);
+				setArtistNames((prev) => ({
+					...prev,
+					[streamId]: artistName,
+				}));
+			}
+		});
+
 		return () => {
 			// Remove all socket event listeners
 			socketInstance.off("BID_PLACED");
@@ -255,6 +337,7 @@ export default function StudioPage() {
 			socketInstance.off("VOTE_CAST");
 			socketInstance.off("votes_update");
 			socketInstance.off("VOTES_CLEARED");
+			socketInstance.off("artist_name_set");
 			
 			// Disconnect socket
 			socketInstance.disconnect();
@@ -487,8 +570,24 @@ export default function StudioPage() {
 	}
 
 	return (
-		<main className="max-w-6xl mx-auto p-6 space-y-6">
-			<h1 className="text-3xl font-bold">🎬 1 of 1's Game Show Studio</h1>
+		<main className="max-w-6xl mx-auto p-6 space-y-4">
+			{/* Logo */}
+			<div className="flex justify-center pb-2">
+				<div className="w-72 h-72">
+					<Link href="/">
+						<img
+							src="/logo.png"
+							alt="1 of 1's Game Show Logo"
+							className="object-contain w-full h-full bg-transparent hover:opacity-80 transition-opacity cursor-pointer"
+						/>
+					</Link>
+				</div>
+			</div>
+			
+			{/* Title */}
+			<div className="text-center py-2">
+				<h1 className="text-3xl font-bold">🎬 1 of 1's Game Show Studio</h1>
+			</div>
 			
 			{/* Show Status */}
 			<div className="glass p-4 rounded-lg border border-blue-500/20">
@@ -641,11 +740,13 @@ export default function StudioPage() {
 						const voteData = votes[artistId];
 						const count = voteData?.count ?? 0;
 						const topVoters = (voteData?.voters || []).slice(0, 3);
+						const customName = artistNames[artistId];
+						const displayName = customName || `Artist ${artistNum}`;
 
 						return (
 							<div key={artistId} className="flex items-center justify-between px-3 py-2 rounded-xl border border-purple-500/40 bg-purple-500/10">
 								<div>
-									<div className="text-sm font-semibold text-white">Artist {artistNum}</div>
+									<div className="text-sm font-semibold text-white">{displayName}</div>
 									{topVoters.length > 0 && (
 										<div className="text-xs text-purple-200">
 											Recent votes: {topVoters.map(voter => voter.username || voter.userId.slice(0, 6)).join(", ")}
@@ -710,7 +811,7 @@ export default function StudioPage() {
 				<p className="text-sm text-neutral-400">Generate custom links to share with artists and host. Each link provides secure access to stream.</p>
 				
 				{/* Streaming Links Generator */}
-				<StreamingLinksGenerator />
+				<StreamingLinksGenerator artistNames={artistNames} />
 
 				<div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
 					{/* Host Webcam */}
@@ -724,22 +825,22 @@ export default function StudioPage() {
 					<WebRTCPublisher 
 						streamId="artist_1" 
 						streamType="screen" 
-						label="🎨 Artist 1 (Screen Share)"
+						label={`🎨 ${artistNames["artist_1"] || "Artist 1"} (Screen Share)`}
 					/>
 					<WebRTCPublisher 
 						streamId="artist_2" 
 						streamType="screen" 
-						label="🎨 Artist 2 (Screen Share)"
+						label={`🎨 ${artistNames["artist_2"] || "Artist 2"} (Screen Share)`}
 					/>
 					<WebRTCPublisher 
 						streamId="artist_3" 
 						streamType="screen" 
-						label="🎨 Artist 3 (Screen Share)"
+						label={`🎨 ${artistNames["artist_3"] || "Artist 3"} (Screen Share)`}
 					/>
 					<WebRTCPublisher 
 						streamId="artist_4" 
 						streamType="screen" 
-						label="🎨 Artist 4 (Screen Share)"
+						label={`🎨 ${artistNames["artist_4"] || "Artist 4"} (Screen Share)`}
 					/>
 				</div>
 

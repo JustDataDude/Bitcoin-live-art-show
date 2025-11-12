@@ -549,6 +549,37 @@ io.on("connection", (socket) => {
     });
   });
 
+  // Stop a specific stream handler
+  socket.on("stop_stream", ({ streamId }) => {
+    console.log(`[WebRTC] Stopping stream: ${streamId}`);
+    if (streamId) {
+      // Notify the specific publisher to stop
+      io.emit("stop_stream", { streamId });
+      // Clear the stream state
+      if (streams[streamId]) {
+        delete streams[streamId];
+      }
+      // Also notify all viewers that the stream has ended
+      io.to(streamId).emit("stream_ended", { streamId });
+    }
+  });
+
+  // Set artist name handler
+  socket.on("set_artist_name", ({ streamId, artistName }) => {
+    console.log(`[Artist Name] Setting name for ${streamId}: ${artistName}`);
+    if (streamId && artistName) {
+      // Store artist name (in production, use Redis or database)
+      if (!(global as any).artistNames) {
+        (global as any).artistNames = new Map<string, string>();
+      }
+      (global as any).artistNames.set(streamId, artistName);
+      
+      // Broadcast to all clients - emit as direct data (not wrapped)
+      console.log(`[Artist Name] Broadcasting to all clients: ${streamId} -> ${artistName}`);
+      io.emit("artist_name_set", { streamId, artistName });
+    }
+  });
+
   socket.on("send_message", async ({ lotId, message, username }) => {
     try {
       // Rate limiting
