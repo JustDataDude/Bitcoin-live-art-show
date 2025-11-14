@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { WebRTCPublisher } from "../../../../components/WebRTCPublisher";
+import io from "socket.io-client";
 
 export default function HostStreamPage() {
 	const params = useParams();
@@ -11,6 +12,15 @@ export default function HostStreamPage() {
 	const [streamId, setStreamId] = useState<string | null>(null);
 	const [isLoading, setIsLoading] = useState(true);
 	const [error, setError] = useState<string | null>(null);
+	const [hostName, setHostName] = useState<string>("");
+	const [showNameInput, setShowNameInput] = useState(true);
+	const [socket, setSocket] = useState<any>(null);
+	const [mounted, setMounted] = useState(false);
+
+	// Ensure we only access localStorage after component mounts (client-side only)
+	useEffect(() => {
+		setMounted(true);
+	}, []);
 
 	useEffect(() => {
 		const fetchStreamInfo = async () => {
@@ -35,10 +45,10 @@ export default function HostStreamPage() {
 					throw new Error("This link is for artist streaming, not host");
 				}
 				setStreamId(responseData.streamId);
+				setIsLoading(false);
 			} catch (err) {
 				console.error("[Host Stream] Error:", err);
 				setError(err instanceof Error ? err.message : "Failed to load stream");
-			} finally {
 				setIsLoading(false);
 			}
 		};
@@ -47,6 +57,54 @@ export default function HostStreamPage() {
 			fetchStreamInfo();
 		}
 	}, [token]);
+
+	// Load saved host name from localStorage only after mount (client-side)
+	// This runs separately to avoid hydration issues
+	// Delay slightly to ensure hydration is complete
+	useEffect(() => {
+		if (mounted && streamId && typeof window !== "undefined") {
+			// Use requestAnimationFrame to ensure this runs after hydration
+			const timeoutId = setTimeout(() => {
+				const savedName = localStorage.getItem(`host_name_${streamId}`);
+				if (savedName) {
+					setHostName(savedName);
+					setShowNameInput(false);
+				}
+			}, 0);
+			
+			return () => clearTimeout(timeoutId);
+		}
+	}, [mounted, streamId]);
+
+	// Initialize socket connection for sending host name
+	useEffect(() => {
+		if (!streamId) return;
+		
+		const wsUrl = process.env.NEXT_PUBLIC_WS_URL || "http://localhost:4001";
+		const socketInstance = io(wsUrl, {
+			transports: ["polling", "websocket"],
+			reconnection: true,
+		});
+		setSocket(socketInstance);
+
+		return () => {
+			socketInstance.disconnect();
+		};
+	}, [streamId]);
+
+	const handleSetName = () => {
+		if (hostName.trim() && streamId) {
+			// Save to localStorage
+			localStorage.setItem(`host_name_${streamId}`, hostName.trim());
+			
+			// Send to server to broadcast to all viewers
+			if (socket) {
+				socket.emit("set_artist_name", { streamId, artistName: hostName.trim() });
+			}
+			
+			setShowNameInput(false);
+		}
+	};
 
 	if (isLoading) {
 		return (
@@ -92,12 +150,64 @@ export default function HostStreamPage() {
 					</p>
 				</div>
 
+				{/* Host Name Input - Show input field during initial render to match server/client */}
+				{showNameInput ? (
+					<div className="mb-6 glass rounded-2xl p-6 border border-blue-500/30">
+						<h3 className="text-lg font-semibold text-white mb-4">✨ Set Your Host Name</h3>
+						<p className="text-sm text-slate-300 mb-4">
+							Choose a unique name that will be displayed to viewers instead of "Host"
+						</p>
+						<div className="flex gap-3">
+							<input
+								type="text"
+								value={hostName}
+								onChange={(e) => setHostName(e.target.value)}
+								onKeyDown={(e) => {
+									if (e.key === "Enter") {
+										handleSetName();
+									}
+								}}
+								placeholder="Enter your host name..."
+								className="flex-1 bg-gradient-to-r from-blue-500/10 to-purple-500/10 border-2 border-blue-500/30 focus:border-blue-500 rounded-xl px-4 py-3 text-black font-bold placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all"
+								maxLength={30}
+							/>
+							<button
+								onClick={handleSetName}
+								disabled={!hostName.trim()}
+								className="bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 text-white font-semibold px-6 py-3 rounded-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+							>
+								Set Name
+							</button>
+						</div>
+					</div>
+				) : (
+					/* Show current name if set */
+					hostName && (
+						<div className="mb-6 glass rounded-xl p-4 border border-green-500/30">
+							<div className="flex items-center justify-between">
+								<div>
+									<p className="text-sm text-slate-400">Your Host Name:</p>
+									<p className="text-lg font-bold text-white">{hostName}</p>
+								</div>
+								<button
+									onClick={() => {
+										setShowNameInput(true);
+									}}
+									className="text-sm text-blue-400 hover:text-blue-300 underline"
+								>
+									Change
+								</button>
+							</div>
+						</div>
+					)
+				)}
+
 				{/* Streaming Component */}
 				<div className="glass rounded-2xl p-6 border border-purple-500/30">
 					<WebRTCPublisher
 						streamId={streamId}
 						streamType="webcam"
-						label="🎤 Host of the Night"
+						label={hostName ? `🎤 ${hostName}` : "🎤 Host of the Night"}
 					/>
 				</div>
 

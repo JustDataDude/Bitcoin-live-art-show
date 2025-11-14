@@ -14,6 +14,12 @@ export default function ArtistStreamPage() {
 	const [error, setError] = useState<string | null>(null);
 	const [artistName, setArtistName] = useState<string>("");
 	const [showNameInput, setShowNameInput] = useState(true);
+	const [mounted, setMounted] = useState(false);
+
+	// Ensure we only access localStorage after component mounts (client-side only)
+	useEffect(() => {
+		setMounted(true);
+	}, []);
 
 	useEffect(() => {
 		const fetchStreamInfo = async () => {
@@ -38,17 +44,10 @@ export default function ArtistStreamPage() {
 					throw new Error("This link is for host streaming, not artist");
 				}
 				setStreamId(responseData.streamId);
-				
-				// Load saved artist name from localStorage
-				const savedName = localStorage.getItem(`artist_name_${responseData.streamId}`);
-				if (savedName) {
-					setArtistName(savedName);
-					setShowNameInput(false);
-				}
+				setIsLoading(false);
 			} catch (err) {
 				console.error("[Artist Stream] Error:", err);
 				setError(err instanceof Error ? err.message : "Failed to load stream");
-			} finally {
 				setIsLoading(false);
 			}
 		};
@@ -57,6 +56,24 @@ export default function ArtistStreamPage() {
 			fetchStreamInfo();
 		}
 	}, [token]);
+
+	// Load saved artist name from localStorage only after mount (client-side)
+	// This runs separately to avoid hydration issues
+	// Delay slightly to ensure hydration is complete
+	useEffect(() => {
+		if (mounted && streamId && typeof window !== "undefined") {
+			// Use setTimeout to ensure this runs after hydration
+			const timeoutId = setTimeout(() => {
+				const savedName = localStorage.getItem(`artist_name_${streamId}`);
+				if (savedName) {
+					setArtistName(savedName);
+					setShowNameInput(false);
+				}
+			}, 0);
+			
+			return () => clearTimeout(timeoutId);
+		}
+	}, [mounted, streamId]);
 
 	const [socket, setSocket] = useState<any>(null);
 
@@ -134,8 +151,8 @@ export default function ArtistStreamPage() {
 					</p>
 				</div>
 
-				{/* Artist Name Input */}
-				{showNameInput && (
+				{/* Artist Name Input - Show input field during initial render to match server/client */}
+				{showNameInput ? (
 					<div className="mb-6 glass rounded-2xl p-6 border border-blue-500/30">
 						<h3 className="text-lg font-semibold text-white mb-4">✨ Set Your Artist Name</h3>
 						<p className="text-sm text-slate-300 mb-4">
@@ -164,26 +181,26 @@ export default function ArtistStreamPage() {
 							</button>
 						</div>
 					</div>
-				)}
-
-				{/* Show current name if set */}
-				{!showNameInput && artistName && (
-					<div className="mb-6 glass rounded-xl p-4 border border-green-500/30">
-						<div className="flex items-center justify-between">
-							<div>
-								<p className="text-sm text-slate-400">Your Artist Name:</p>
-								<p className="text-lg font-bold text-white">{artistName}</p>
+				) : (
+					/* Show current name if set */
+					artistName && (
+						<div className="mb-6 glass rounded-xl p-4 border border-green-500/30">
+							<div className="flex items-center justify-between">
+								<div>
+									<p className="text-sm text-slate-400">Your Artist Name:</p>
+									<p className="text-lg font-bold text-white">{artistName}</p>
+								</div>
+								<button
+									onClick={() => {
+										setShowNameInput(true);
+									}}
+									className="text-sm text-blue-400 hover:text-blue-300 underline"
+								>
+									Change
+								</button>
 							</div>
-							<button
-								onClick={() => {
-									setShowNameInput(true);
-								}}
-								className="text-sm text-blue-400 hover:text-blue-300 underline"
-							>
-								Change
-							</button>
 						</div>
-					</div>
+					)
 				)}
 
 				{/* Streaming Component */}
