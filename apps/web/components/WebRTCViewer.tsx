@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, memo } from "react";
 import { io, Socket } from "socket.io-client";
 
 interface WebRTCViewerProps {
@@ -8,13 +8,14 @@ interface WebRTCViewerProps {
 	label: string;
 }
 
-export function WebRTCViewer({ streamId, label }: WebRTCViewerProps) {
+function WebRTCViewerComponent({ streamId, label }: WebRTCViewerProps) {
 	const [isConnected, setIsConnected] = useState(false);
 	const [isLive, setIsLive] = useState(false);
 
 	const videoRef = useRef<HTMLVideoElement>(null);
 	const socketRef = useRef<Socket | null>(null);
 	const peerRef = useRef<RTCPeerConnection | null>(null);
+	const retryTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
 	useEffect(() => {
 		// Connect to signaling server
@@ -33,8 +34,65 @@ export function WebRTCViewer({ streamId, label }: WebRTCViewerProps) {
 			console.log(`[WebRTC Viewer ${streamId}] Connected to signaling server`);
 			setIsConnected(true);
 
-			// Request to watch this stream
-			socket.emit("watch-stream", { streamId });
+			// Request to watch this stream immediately
+			const requestWatch = () => {
+				// Only request if we don't already have a peer connection in a good state
+				if (socket.connected) {
+					const hasGoodConnection = peerRef.current && 
+						peerRef.current.signalingState !== "closed" &&
+						peerRef.current.connectionState === "connected" &&
+						(peerRef.current.iceConnectionState === "connected" || peerRef.current.iceConnectionState === "completed");
+					
+					if (!hasGoodConnection) {
+						console.log(`[WebRTC Viewer ${streamId}] Requesting to watch stream`);
+						socket.emit("watch-stream", { streamId });
+						return true;
+					} else {
+						console.log(`[WebRTC Viewer ${streamId}] Already have good peer connection, skipping watch request`);
+					}
+				}
+				return false;
+			};
+			
+			// Request immediately
+			requestWatch();
+			
+			// Retry after delays to catch streams that are already active
+			// This helps when the stream is already running when the page loads
+			if (retryTimeoutRef.current) {
+				clearTimeout(retryTimeoutRef.current);
+			}
+			
+			// Retry after 1 second if still no peer connection
+			retryTimeoutRef.current = setTimeout(() => {
+				if (socket.connected && socketRef.current?.connected && !isLive) {
+					const hasConnection = peerRef.current && 
+						peerRef.current.signalingState !== "closed" &&
+						peerRef.current.connectionState !== "closed" &&
+						peerRef.current.connectionState !== "failed";
+					
+					if (!hasConnection) {
+						console.log(`[WebRTC Viewer ${streamId}] Retry 1s: Requesting watch-stream (stream may already be active)`);
+						requestWatch();
+					}
+				}
+				retryTimeoutRef.current = null;
+			}, 1000);
+			
+			// Additional retry after 3 seconds for streams that take longer to establish
+			setTimeout(() => {
+				if (socket.connected && socketRef.current?.connected && !isLive) {
+					const hasConnection = peerRef.current && 
+						peerRef.current.signalingState !== "closed" &&
+						peerRef.current.connectionState !== "closed" &&
+						peerRef.current.connectionState !== "failed";
+					
+					if (!hasConnection) {
+						console.log(`[WebRTC Viewer ${streamId}] Retry 3s: Requesting watch-stream again`);
+						requestWatch();
+					}
+				}
+			}, 3000);
 		});
 
 		socket.on("connect_error", (error) => {
@@ -42,18 +100,42 @@ export function WebRTCViewer({ streamId, label }: WebRTCViewerProps) {
 		});
 
 		socket.on("disconnect", (reason) => {
-			console.warn(`[WebRTC Viewer ${streamId}] Disconnected:`, reason);
-			setIsConnected(false);
+			// Only log unexpected disconnects (not manual cleanups)
+			// "io client disconnect" is the normal reason when we call socket.disconnect()
+			if (reason !== "io client disconnect") {
+				console.warn(`[WebRTC Viewer ${streamId}] Unexpected disconnect:`, reason);
+			}
+			// Only update state if socket still exists (not during cleanup)
+			if (socketRef.current === socket) {
+				setIsConnected(false);
+			}
 		});
 
 		socket.on("stream-available", ({ streamId: availableStreamId }) => {
 			if (availableStreamId === streamId) {
 				console.log(`[WebRTC Viewer ${streamId}] Stream is available`);
-				setIsLive(true);
-				// Only request to watch if we don't already have a peer connection
-				// The server will prevent duplicate viewer-joined events anyway
-				if (!peerRef.current || peerRef.current.signalingState === "closed") {
+				// Don't set isLive here - wait until we actually have media
+				// Clear retry timeout since stream is now available
+				if (retryTimeoutRef.current) {
+					clearTimeout(retryTimeoutRef.current);
+					retryTimeoutRef.current = null;
+				}
+				// Check if we have a fully working peer connection
+				const hasGoodConnection = peerRef.current && 
+					peerRef.current.signalingState !== "closed" &&
+					peerRef.current.connectionState === "connected" &&
+					(peerRef.current.iceConnectionState === "connected" || peerRef.current.iceConnectionState === "completed");
+				
+				// If we don't have a fully working connection, request to watch
+				// This will trigger the publisher to send an offer
+				if (!hasGoodConnection) {
+					console.log(`[WebRTC Viewer ${streamId}] No fully working peer connection, requesting to watch stream`);
 					socket.emit("watch-stream", { streamId });
+				} else if (peerRef.current) {
+					const state = peerRef.current.signalingState;
+					const connState = peerRef.current.connectionState;
+					const iceState = peerRef.current.iceConnectionState;
+					console.log(`[WebRTC Viewer ${streamId}] Already have fully working peer connection (state: ${state}, conn: ${connState}, ice: ${iceState}), waiting for offer`);
 				}
 			}
 		});
@@ -63,6 +145,7 @@ export function WebRTCViewer({ streamId, label }: WebRTCViewerProps) {
 				console.log(`[WebRTC Viewer ${streamId}] Stream is unavailable`);
 				setIsLive(false);
 				if (peerRef.current) {
+					console.log(`[WebRTC Viewer ${streamId}] Closing peer connection due to stream unavailability`);
 					peerRef.current.close();
 					peerRef.current = null;
 				}
@@ -83,6 +166,23 @@ export function WebRTCViewer({ streamId, label }: WebRTCViewerProps) {
 		socket.on("webrtc-offer", async ({ streamId: offerStreamId, offer }) => {
 			if (offerStreamId !== streamId) return;
 			console.log(`[WebRTC Viewer ${streamId}] Received offer:`, offer);
+			
+			// Check if we already have an active peer connection
+			// If we do and it's in a good state, ignore duplicate offers
+			if (peerRef.current) {
+				const state = peerRef.current.signalingState;
+				const connectionState = peerRef.current.connectionState;
+				const iceState = peerRef.current.iceConnectionState;
+				
+				// If we have an active connection that's working, ignore the duplicate offer
+				if (state === "stable" && 
+					(connectionState === "connected" || connectionState === "connecting") &&
+					(iceState === "connected" || iceState === "checking" || iceState === "completed")) {
+					console.log(`[WebRTC Viewer ${streamId}] Ignoring duplicate offer - already have active connection (state: ${state}, conn: ${connectionState}, ice: ${iceState})`);
+					return;
+				}
+			}
+			
 			await handleOffer(offer);
 		});
 
@@ -105,46 +205,113 @@ export function WebRTCViewer({ streamId, label }: WebRTCViewerProps) {
 		});
 
 		return () => {
-			// Clean up peer connection
+			// Immediate cleanup for faster page transitions
+			console.log(`[WebRTC Viewer ${streamId}] Cleaning up on unmount`);
+			
+			// Clear retry timeout immediately
+			if (retryTimeoutRef.current) {
+				clearTimeout(retryTimeoutRef.current);
+				retryTimeoutRef.current = null;
+			}
+			
+			// Clean up peer connection immediately
 			if (peerRef.current) {
-				peerRef.current.close();
+				try {
+					// Stop all tracks first
+					peerRef.current.getReceivers().forEach(receiver => {
+						if (receiver.track) {
+							receiver.track.stop();
+						}
+					});
+					peerRef.current.close();
+				} catch (e) {
+					// Ignore errors during cleanup
+				}
 				peerRef.current = null;
 			}
 			
-			// Clean up video stream
+			// Clean up video stream immediately
 			if (videoRef.current) {
-				const stream = videoRef.current.srcObject as MediaStream;
-				if (stream) {
-					stream.getTracks().forEach(track => {
-						track.stop();
-						stream.removeTrack(track);
-					});
+				try {
+					const stream = videoRef.current.srcObject as MediaStream;
+					if (stream) {
+						stream.getTracks().forEach(track => {
+							track.stop();
+						});
+					}
+					videoRef.current.srcObject = null;
+					videoRef.current.load();
+				} catch (e) {
+					// Ignore errors during cleanup
 				}
-				videoRef.current.srcObject = null;
-				videoRef.current.load();
 			}
 			
-			// Remove all socket listeners
-			socket.off("webrtc-offer");
-			socket.off("webrtc-ice-candidate");
-			socket.off("stream-available");
-			socket.off("stream-unavailable");
-			
-			// Disconnect socket
-			socket.disconnect();
+			// Disconnect socket immediately (don't wait for listeners)
+			if (socketRef.current) {
+				const socket = socketRef.current;
+				
+				// Disconnect immediately - this will remove all listeners automatically
+				if (socket.connected) {
+					socket.disconnect();
+				}
+				
+				// Remove listeners after disconnect for safety
+				socket.off("webrtc-offer");
+				socket.off("webrtc-ice-candidate");
+				socket.off("stream-available");
+				socket.off("stream-unavailable");
+				socket.off("connect");
+				socket.off("connect_error");
+				socket.off("disconnect");
+				
+				socketRef.current = null;
+			}
 		};
 	}, [streamId]);
 
 	const handleOffer = async (offer: RTCSessionDescriptionInit) => {
 		try {
-			// Close existing peer connection if one exists
+			// Check if we have an existing peer connection
 			if (peerRef.current) {
-				console.log(`[WebRTC Viewer ${streamId}] Closing existing peer connection`);
-				peerRef.current.close();
-				peerRef.current = null;
+				const state = peerRef.current.signalingState;
+				const connectionState = peerRef.current.connectionState;
+				const iceState = peerRef.current.iceConnectionState;
+				
+				// Close if in bad states
+				const isBadState = state === "closed" || 
+					connectionState === "closed" || 
+					connectionState === "failed" ||
+					connectionState === "disconnected" ||
+					iceState === "failed" ||
+					iceState === "disconnected" ||
+					iceState === "closed";
+				
+				// If already connected and working, ignore duplicate offer
+				const isWorking = (connectionState === "connected" || connectionState === "connecting") &&
+					(iceState === "connected" || iceState === "checking" || iceState === "completed");
+				
+				// If in a signaling state that can't accept an offer, close it
+				const cannotAcceptOffer = state === "have-local-offer" || state === "have-remote-offer";
+				
+				if (isBadState || cannotAcceptOffer) {
+					console.log(`[WebRTC Viewer ${streamId}] Closing existing peer connection (state: ${state}, conn: ${connectionState}, ice: ${iceState})`);
+					peerRef.current.close();
+					peerRef.current = null;
+				} else if (isWorking) {
+					console.log(`[WebRTC Viewer ${streamId}] Already have working connection, ignoring duplicate offer`);
+					return;
+				} else {
+					// For any other state (including stable/new/new), close and create new
+					// It's safer to always create a fresh connection rather than trying to reuse
+					console.log(`[WebRTC Viewer ${streamId}] Closing existing connection (state: ${state}, conn: ${connectionState}, ice: ${iceState}), creating new`);
+					if (peerRef.current) {
+						peerRef.current.close();
+						peerRef.current = null;
+					}
+				}
 			}
 
-			// Create peer connection
+			// Create new peer connection
 			const peer = new RTCPeerConnection({
 				iceServers: [
 					{ urls: "stun:stun.l.google.com:19302" },
@@ -154,15 +321,77 @@ export function WebRTCViewer({ streamId, label }: WebRTCViewerProps) {
 
 			// Handle incoming media stream
 			peer.ontrack = (event) => {
-				console.log(`[WebRTC Viewer ${streamId}] Received track:`, event.track.kind);
+				console.log(`[WebRTC Viewer ${streamId}] Received track:`, event.track.kind, `(id: ${event.track.id}, state: ${event.track.readyState})`);
+				
+				// Set isLive to true when we receive media tracks
+				if (event.track.readyState === "live") {
+					setIsLive(true);
+				}
+				
+				// Handle track state changes
+				event.track.onended = () => {
+					console.log(`[WebRTC Viewer ${streamId}] Track ${event.track.id} ended`);
+					setIsLive(false);
+				};
+				
+				event.track.onmute = () => {
+					console.log(`[WebRTC Viewer ${streamId}] Track ${event.track.id} muted`);
+				};
+				
+				event.track.onunmute = () => {
+					console.log(`[WebRTC Viewer ${streamId}] Track ${event.track.id} unmuted`);
+					setIsLive(true);
+				};
+				
 				if (videoRef.current && event.streams[0]) {
-					videoRef.current.srcObject = event.streams[0];
-					console.log(`[WebRTC Viewer ${streamId}] Video srcObject set`);
+					const video = videoRef.current;
 					
-					// Force video to play
-					videoRef.current.play().catch((err) => {
-						console.warn(`[WebRTC Viewer ${streamId}] Autoplay prevented:`, err);
-					});
+					// Set up event listeners before changing srcObject
+					const handleLoadedMetadata = () => {
+						console.log(`[WebRTC Viewer ${streamId}] Video metadata loaded`);
+						video.play().catch((err) => {
+							// Only log if it's not an interruption error
+							if (!err.message?.includes("interrupted") && !err.message?.includes("AbortError")) {
+								console.warn(`[WebRTC Viewer ${streamId}] Autoplay prevented:`, err);
+							}
+						});
+					};
+					
+					const handleCanPlay = () => {
+						console.log(`[WebRTC Viewer ${streamId}] Video can play`);
+						if (video.paused) {
+							video.play().catch((err) => {
+								if (!err.message?.includes("interrupted") && !err.message?.includes("AbortError")) {
+									console.warn(`[WebRTC Viewer ${streamId}] Autoplay prevented:`, err);
+								}
+							});
+						}
+					};
+					
+					// Remove old listeners if they exist
+					video.removeEventListener('loadedmetadata', handleLoadedMetadata);
+					video.removeEventListener('canplay', handleCanPlay);
+					
+					// Add new listeners
+					video.addEventListener('loadedmetadata', handleLoadedMetadata, { once: true });
+					video.addEventListener('canplay', handleCanPlay, { once: true });
+					
+					// Set the new stream (or update if stream already exists)
+					if (video.srcObject !== event.streams[0]) {
+						video.srcObject = event.streams[0];
+						console.log(`[WebRTC Viewer ${streamId}] Video srcObject set, stream is now LIVE`);
+					} else {
+						console.log(`[WebRTC Viewer ${streamId}] Stream already set, track added to existing stream`);
+					}
+					
+					// Try to play immediately if video is ready
+					if (video.readyState >= 2) { // HAVE_CURRENT_DATA
+						video.play().catch((err) => {
+							if (!err.message?.includes("interrupted") && !err.message?.includes("AbortError")) {
+								console.warn(`[WebRTC Viewer ${streamId}] Autoplay prevented:`, err);
+							}
+						});
+					}
 				}
 			};
 
@@ -270,4 +499,10 @@ export function WebRTCViewer({ streamId, label }: WebRTCViewerProps) {
 		</div>
 	);
 }
+
+// Memoize to prevent unnecessary re-renders
+export const WebRTCViewer = memo(WebRTCViewerComponent, (prevProps, nextProps) => {
+	// Only re-render if streamId or label changes
+	return prevProps.streamId === nextProps.streamId && prevProps.label === nextProps.label;
+});
 

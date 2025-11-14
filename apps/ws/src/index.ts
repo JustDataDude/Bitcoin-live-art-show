@@ -103,16 +103,73 @@ async function getOrCreateUser(socket: Socket, username?: string) {
   const providedHandle = typeof socket.data?.userHandle === 'string' && socket.data.userHandle.trim() ? socket.data.userHandle.trim() : null;
   const handle = providedHandle || `socket_${socket.id}`;
 
-  // Upsert to avoid race-condition on unique handle
-  const user = await prisma.user.upsert({
+  // First, try to find existing user by handle
+  let user = await prisma.user.findUnique({
     where: { handle },
-    update: username ? { username } : {},
-    create: {
-      handle,
-      role: "viewer",
-      ...(username ? { username } : {}),
-    },
-  } as any);
+  }) as any;
+
+  // If user exists, check if we can update username
+  if (user) {
+    if (username && username.trim() && user.username !== username.trim()) {
+      // Check if username is already taken by another user
+      const existingUserWithUsername = await prisma.user.findFirst({
+        where: {
+          username: username.trim(),
+          handle: { not: handle }, // Different user
+        },
+      });
+
+      if (existingUserWithUsername) {
+        // Username is taken by another user, don't update
+        console.log(`[getOrCreateUser] Username "${username.trim()}" is already taken by another user, keeping existing username for handle ${handle}`);
+      } else {
+        // Username is available, update it
+        user = await prisma.user.update({
+          where: { handle },
+          data: { username: username.trim() },
+        } as any);
+      }
+    }
+    return user;
+  }
+
+  // User doesn't exist, create new one
+  // Check if username is already taken before creating
+  if (username && username.trim()) {
+    const existingUserWithUsername = await prisma.user.findFirst({
+      where: {
+        username: username.trim(),
+      },
+    });
+
+    if (existingUserWithUsername) {
+      // Username is taken, create without username
+      console.log(`[getOrCreateUser] Username "${username.trim()}" is already taken, creating user without username for handle ${handle}`);
+      user = await prisma.user.create({
+        data: {
+          handle,
+          role: "viewer",
+        } as any,
+      });
+    } else {
+      // Username is available, create with username
+      user = await prisma.user.create({
+        data: {
+          handle,
+          role: "viewer",
+          username: username.trim(),
+        } as any,
+      });
+    }
+  } else {
+    // No username provided, create without it
+    user = await prisma.user.create({
+      data: {
+        handle,
+        role: "viewer",
+      } as any,
+    });
+  }
 
   return user as any;
 }
@@ -137,10 +194,29 @@ io.on("connection", (socket) => {
       if (typeof userHandle === 'string' && userHandle.trim()) {
         socket.data.userHandle = userHandle.trim();
       }
+      
+      // Check if username is already taken by another user
+      if (username && username.trim()) {
+        const existingUser = await prisma.user.findFirst({
+          where: {
+            username: username.trim(),
+          },
+        });
+        
+        // If username exists and belongs to a different user (different handle)
+        if (existingUser && existingUser.handle !== (socket.data.userHandle || `socket_${socket.id}`)) {
+          socket.emit("username_taken", { username: username.trim() });
+          console.log(`[Auth] Username already taken: ${username.trim()} by ${existingUser.handle}`);
+          return;
+        }
+      }
+      
       await getOrCreateUser(socket, username);
       console.log(`[Auth] Registered user: handle=${socket.data.userHandle || `socket_${socket.id}`} username=${username || 'unchanged'}`);
+      socket.emit("user_registered", { ok: true, username: username || null });
     } catch (err) {
       console.error("[Auth] register_user error:", err);
+      socket.emit("user_registered", { ok: false, error: "Registration failed" });
     }
   });
 
@@ -244,16 +320,14 @@ io.on("connection", (socket) => {
       // Add viewer to stream (Set.add is idempotent, but we track it)
       stream.viewers.add(socket.id);
       
-      // Only notify publisher about NEW viewers (not reconnection/re-watch attempts)
-      if (!wasAlreadyWatching) {
-        console.log(`[WebRTC] New viewer ${socket.id} joined stream ${streamId}`);
-        io.to(stream.publisherId).emit("viewer-joined", {
-          streamId,
-          viewerId: socket.id,
-        });
-      } else {
-        console.log(`[WebRTC] Viewer ${socket.id} already watching ${streamId}, skipping viewer-joined event`);
-      }
+      // Always notify publisher, but only create peer connection if it's a new viewer
+      // This ensures reconnections work while preventing duplicate peer connections
+      console.log(`[WebRTC] Viewer ${socket.id} ${wasAlreadyWatching ? 're-' : ''}joined stream ${streamId}`);
+      io.to(stream.publisherId).emit("viewer-joined", {
+        streamId,
+        viewerId: socket.id,
+        isReconnect: wasAlreadyWatching, // Let publisher know if this is a reconnect
+      });
 
       // Update viewer count
       io.to(stream.publisherId).emit("viewer-count", {
@@ -265,6 +339,7 @@ io.on("connection", (socket) => {
       socket.emit("stream-available", { streamId });
     } else {
       // Stream not available
+      console.log(`[WebRTC] Stream ${streamId} not available for viewer ${socket.id}`);
       socket.emit("stream-unavailable", { streamId });
     }
   });
@@ -391,13 +466,16 @@ io.on("connection", (socket) => {
         amountUsd,
       });
 
+      // Use the username from the request, fallback to database username
+      const displayUsername = username?.trim() || (user as any).username || `User ${user.id.slice(0, 6)}`;
+      
       const evt = {
         type: "BID_PLACED",
         data: { 
           bidId: bid.id,
           lotId, 
           userId: user.id, 
-          username: (user as any).username,
+          username: displayUsername,
           amountUsd, 
           createdAt: bid.createdAt.toISOString(),
           ts: bid.createdAt.getTime()
@@ -405,7 +483,7 @@ io.on("connection", (socket) => {
       } as const;
 
       io.to(lotId).emit("BID_PLACED", evt);
-      console.log(`[Bid] ${(user as any).username} bid $${amountUsd} on ${lotId}`);
+      console.log(`[Bid] ${displayUsername} bid $${amountUsd} on ${lotId}`);
     } catch (error) {
       console.error("[Bid] Error:", error);
       socket.emit("error", { 
@@ -483,13 +561,16 @@ io.on("connection", (socket) => {
         })
       );
 
+      // Use the username from the request, fallback to database username
+      const displayUsername = username?.trim() || (user as any).username || `User ${user.id.slice(0, 6)}`;
+      
       const evt = {
         type: "TIP_RECEIVED",
         data: { 
           tipId: tip.id,
           lotId, 
           userId: user.id, 
-          username: (user as any).username,
+          username: displayUsername,
           amountUsd, 
           message: sanitizedMessage || '',
           artistId: artistId || null,
@@ -501,7 +582,7 @@ io.on("connection", (socket) => {
       
       io.to(lotId).emit("TIP_RECEIVED", evt);
       const artistInfo = artistId ? ` to ${artistId}` : '';
-      console.log(`[Tip] ${(user as any).username} tipped $${amountUsd}${artistInfo} on ${lotId}: "${sanitizedMessage}"`);
+      console.log(`[Tip] ${displayUsername} tipped $${amountUsd}${artistInfo} on ${lotId}: "${sanitizedMessage}"`);
     } catch (error) {
       console.error("[Tip] Error:", error);
     }
@@ -629,18 +710,21 @@ io.on("connection", (socket) => {
       const user = await getOrCreateUser(socket, username);
       if (!user) throw new Error('User not resolved');
       
+      // Use the username from the request, fallback to database username
+      const displayUsername = username?.trim() || (user as any).username || `User ${user.id.slice(0, 6)}`;
+      
       // Save chat message to database with retry logic
       const chatMessage = await withRetry(() =>
         (prisma as any).chatMessage.create({
           data: {
             lotId,
             userId: user.id,
-            username: (user as any).username,
+            username: displayUsername,
             message: sanitizedMessage,
             type: "chat",
           } as any,
         })
-      );
+      ) as any;
 
       const evt = {
         type: "CHAT_MESSAGE",
@@ -648,14 +732,14 @@ io.on("connection", (socket) => {
           lotId,
           messageId: chatMessage.id,
           userId: socket.id,
-          username: (user as any).username,
+          username: displayUsername,
           message: sanitizedMessage,
           createdAt: chatMessage.createdAt.toISOString(),
         },
       };
       
       io.to(lotId).emit("CHAT_MESSAGE", evt);
-      console.log(`[Chat] ${(user as any).username}: ${sanitizedMessage}`);
+      console.log(`[Chat] ${displayUsername}: ${sanitizedMessage}`);
     } catch (error) {
       console.error("[Chat] Error:", error);
     }
@@ -680,10 +764,13 @@ io.on("connection", (socket) => {
         return;
       }
 
+      // Use the username from the request, fallback to database username
+      const displayUsername = username?.trim() || (user as any).username || `User ${user.id.slice(0, 6)}`;
+      
       const voteRecord = {
         artistId,
         userId: user.id,
-        username: (user as any).username || username || `User ${user.id.slice(0, 6)}`,
+        username: displayUsername,
         timestamp: Date.now(),
       };
 

@@ -150,7 +150,7 @@ export default function ShowPage({ params }: { params: { id: string } }) {
 		manager.emit("join_lot", { lotId });
 		manager.emit("get_votes", { lotId });
 
-		// Load persisted identity
+		// Load persisted identity - prioritize logged-in username from UserLogin component
 		const persistedHandle = localStorage.getItem('userHandle');
 		const persistedName = localStorage.getItem('username');
 		let handle = persistedHandle || `viewer_${Math.random().toString(36).slice(2, 8)}`;
@@ -158,6 +158,55 @@ export default function ShowPage({ params }: { params: { id: string } }) {
 		setUserHandle(handle);
 		setUsername(name);
 		manager.emit('register_user', { userHandle: handle, username: name });
+		
+		// Listen for storage changes to update username when user logs in
+		const handleStorageChange = (e: StorageEvent) => {
+			if (e.key === 'username' && e.newValue) {
+				console.log('[ShowPage] Username updated from localStorage:', e.newValue);
+				setUsername(e.newValue);
+				if (socketManagerRef.current) {
+					const handle = localStorage.getItem('userHandle') || `viewer_${Math.random().toString(36).slice(2, 8)}`;
+					setUserHandle(handle);
+					socketManagerRef.current.emit('register_user', { userHandle: handle, username: e.newValue });
+				}
+			}
+			if (e.key === 'userHandle' && e.newValue) {
+				setUserHandle(e.newValue);
+			}
+		};
+		
+		window.addEventListener('storage', handleStorageChange);
+		
+		// Also check periodically for changes (in case storage event doesn't fire for same-window changes)
+		// Use a ref to track the current username to avoid stale closures
+		const usernameRef = { current: name };
+		const handleRef = { current: handle };
+		
+		const checkInterval = setInterval(() => {
+			const currentUsername = localStorage.getItem('username');
+			const currentHandle = localStorage.getItem('userHandle');
+			
+			// Update refs
+			usernameRef.current = currentUsername || usernameRef.current;
+			handleRef.current = currentHandle || handleRef.current;
+			
+			// Check if username changed
+			if (currentUsername && currentUsername !== usernameRef.current) {
+				console.log('[ShowPage] Username changed, updating:', currentUsername);
+				setUsername(currentUsername);
+				usernameRef.current = currentUsername;
+				if (socketManagerRef.current) {
+					const newHandle = currentHandle || handleRef.current || `viewer_${Math.random().toString(36).slice(2, 8)}`;
+					setUserHandle(newHandle);
+					handleRef.current = newHandle;
+					socketManagerRef.current.emit('register_user', { userHandle: newHandle, username: currentUsername });
+				}
+			}
+			if (currentHandle && currentHandle !== handleRef.current) {
+				setUserHandle(currentHandle);
+				handleRef.current = currentHandle;
+			}
+		}, 500); // Check every 500ms for faster updates
 		
 		// Set up event listeners using manager
 		manager.on("BID_PLACED", (e: any) => {
@@ -367,6 +416,14 @@ export default function ShowPage({ params }: { params: { id: string } }) {
 		window.addEventListener('wallet:disconnected', onWalletDisconnected);
 
 		return () => {
+			console.log("[Show Page] Cleaning up on unmount");
+			
+			// Disconnect socket manager immediately (this will clean up listeners)
+			if (socketManagerRef.current) {
+				socketManagerRef.current.disconnect();
+				socketManagerRef.current = null;
+			}
+			
 			// Clean up connection state subscription
 			unsubscribe();
 			
@@ -381,12 +438,11 @@ export default function ShowPage({ params }: { params: { id: string } }) {
 			manager.off("votes_update");
 			manager.off("VOTES_CLEARED");
 			
-			// Disconnect socket manager
-			manager.disconnect();
-			
 			// Remove window event listeners
 			window.removeEventListener('wallet:connected', onWalletConnected);
 			window.removeEventListener('wallet:disconnected', onWalletDisconnected);
+			window.removeEventListener('storage', handleStorageChange);
+			clearInterval(checkInterval);
 		};
 	}, []);
 	
@@ -503,11 +559,17 @@ export default function ShowPage({ params }: { params: { id: string } }) {
 		};
 	}, []);
 
-	// Load historical data on mount with pagination support
+	// Load historical data on mount with pagination support (deferred for faster initial load)
 	useEffect(() => {
 		let isMounted = true;
 		
+		// Defer loading history by 500ms to allow page to render first
+		const loadTimer = setTimeout(() => {
+			loadHistory();
+		}, 500);
+		
 		async function loadHistory() {
+			if (!isMounted) return;
 			setIsLoadingHistory(true);
 			try {
 				// Load bids (using new paginated API) - limit to 20 for faster initial load
@@ -640,14 +702,16 @@ export default function ShowPage({ params }: { params: { id: string } }) {
 		setIsPlacingBid(true);
 		setBidError(null);
 		
-		console.log("[Bid] Placing bid:", { amount, lotId: "seed-lot-1", username });
+		// Get the most current username from localStorage
+		const currentUsername = localStorage.getItem('username') || username;
+		console.log("[Bid] Placing bid:", { amount, lotId: "seed-lot-1", username: currentUsername, stateUsername: username });
 		
 		try {
-			// Send bid
+			// Send bid with current username
 			socketManagerRef.current.emit("place_bid", { 
 				lotId: "seed-lot-1", 
 				amountUsd: amount,
-				username: username 
+				username: currentUsername 
 			});
 			
 			console.log("[Bid] Bid emitted successfully");
@@ -716,10 +780,13 @@ export default function ShowPage({ params }: { params: { id: string } }) {
 		setIsSendingTip(true);
 		
 		try {
+			// Get the most current username from localStorage
+			const currentUsername = localStorage.getItem('username') || username;
+			console.log("[Tip] Sending tip:", { username: currentUsername, stateUsername: username });
 			socketManagerRef.current?.emit("send_tip", { 
 				lotId: "seed-lot-1", 
 				amountUsd: 1, 
-				username: username,
+				username: currentUsername,
 				message: messageValidation.message,
 				artistId: selectedArtistForTip
 			});
@@ -841,8 +908,11 @@ export default function ShowPage({ params }: { params: { id: string } }) {
 		setIsSendingMessage(true);
 		
 		try {
+			// Get the most current username from localStorage
+			const currentUsername = localStorage.getItem('username') || username;
+			console.log("[Chat] Sending message:", { message: trimmedMsg, username: currentUsername, stateUsername: username });
 			// Send to server
-			socketManagerRef.current?.emit("send_message", { lotId: "seed-lot-1", message: trimmedMsg, username });
+			socketManagerRef.current?.emit("send_message", { lotId: "seed-lot-1", message: trimmedMsg, username: currentUsername });
 		} catch (error) {
 			const errorMsg = error instanceof Error ? error.message : "Failed to send message. Please try again.";
 			showToast(errorMsg, "error");
@@ -1092,9 +1162,9 @@ export default function ShowPage({ params }: { params: { id: string } }) {
 							<div className="relative bg-black/30 rounded-xl overflow-hidden border border-purple-500/30 aspect-video">
 								<div className="absolute top-2 right-2 z-10 flex items-center gap-1.5 px-2 py-1 bg-black/60 backdrop-blur-sm rounded-full">
 									<div className="w-1.5 h-1.5 bg-purple-400 rounded-full animate-pulse"></div>
-									<span className="text-xs font-medium text-purple-300">HOST</span>
+									<span className="text-xs font-medium text-purple-300">{artistNames["host_1"] ? artistNames["host_1"].toUpperCase() : "HOST"}</span>
 								</div>
-								<WebRTCViewer streamId="host_1" label="Host" />
+								<WebRTCViewer streamId="host_1" label={artistNames["host_1"] || "Host"} />
 							</div>
 						</div>
 					</div>

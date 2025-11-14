@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { Button } from "@live-art/ui";
-import { WebRTCPublisher } from "../../components/WebRTCPublisher";
+import { WebRTCViewer } from "../../components/WebRTCViewer";
 import io, { Socket } from "socket.io-client";
 import Link from "next/link";
 
@@ -100,7 +100,7 @@ function StreamingLinksGenerator({ artistNames }: { artistNames: Record<string, 
 				{/* Host Link */}
 				<div className="flex items-center gap-3 p-3 bg-slate-800/50 rounded-lg">
 					<div className="flex-1">
-						<span className="text-sm font-medium text-white">🎤 Host Stream</span>
+						<span className="text-sm font-medium text-white">🎤 {artistNames["host_1"] || "Host Stream"}</span>
 						<p className="text-xs text-slate-400">host_1</p>
 					</div>
 					{links.has("host_1") ? (
@@ -342,7 +342,7 @@ export default function StudioPage() {
 			// Disconnect socket
 			socketInstance.disconnect();
 		};
-	}, []);
+	}, [lotId]);
 
 	// Fetch initial lot and show data
 	useEffect(() => {
@@ -813,35 +813,39 @@ export default function StudioPage() {
 				{/* Streaming Links Generator */}
 				<StreamingLinksGenerator artistNames={artistNames} />
 
-				<div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-					{/* Host Webcam */}
-					<WebRTCPublisher 
-						streamId="host_1" 
-						streamType="webcam" 
-						label="🎤 Host of the Night (Webcam)"
-					/>
+				{/* Live Stream Viewers - Shows streams from host/artist pages */}
+				<div className="mb-6">
+					<h3 className="text-lg font-semibold text-white mb-4">📺 Live Streams</h3>
+					<div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+						{/* Host Stream Viewer */}
+						<div className="space-y-2">
+							<h4 className="text-sm font-medium text-slate-300">
+								🎤 {artistNames["host_1"] || "Host"}
+							</h4>
+							<WebRTCViewer 
+								streamId="host_1" 
+								label={artistNames["host_1"] || "Host"}
+							/>
+						</div>
 
-					{/* Artist Screen Shares */}
-					<WebRTCPublisher 
-						streamId="artist_1" 
-						streamType="screen" 
-						label={`🎨 ${artistNames["artist_1"] || "Artist 1"} (Screen Share)`}
-					/>
-					<WebRTCPublisher 
-						streamId="artist_2" 
-						streamType="screen" 
-						label={`🎨 ${artistNames["artist_2"] || "Artist 2"} (Screen Share)`}
-					/>
-					<WebRTCPublisher 
-						streamId="artist_3" 
-						streamType="screen" 
-						label={`🎨 ${artistNames["artist_3"] || "Artist 3"} (Screen Share)`}
-					/>
-					<WebRTCPublisher 
-						streamId="artist_4" 
-						streamType="screen" 
-						label={`🎨 ${artistNames["artist_4"] || "Artist 4"} (Screen Share)`}
-					/>
+						{/* Artist Stream Viewers */}
+						{["artist_1", "artist_2", "artist_3", "artist_4"].map((streamId) => {
+							const artistNum = streamId.split("_")[1];
+							const customName = artistNames[streamId];
+							const displayName = customName || `Artist ${artistNum}`;
+							return (
+								<div key={streamId} className="space-y-2">
+									<h4 className="text-sm font-medium text-slate-300">
+										🎨 {displayName}
+									</h4>
+									<WebRTCViewer 
+										streamId={streamId} 
+										label={displayName}
+									/>
+								</div>
+							);
+						})}
+					</div>
 				</div>
 
 				<div className="p-4 bg-blue-900/20 border border-blue-700 rounded text-sm text-blue-400">

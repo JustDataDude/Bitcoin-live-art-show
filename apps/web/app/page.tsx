@@ -1,6 +1,9 @@
+"use client";
+
 import Link from "next/link";
 import { Button } from "@live-art/ui";
 import { Logo } from "../components/Logo";
+import { UserLogin } from "../components/UserLogin";
 
 export default function HomePage() {
 	return (
@@ -33,11 +36,12 @@ export default function HomePage() {
 						bid on one-of-a-kind pieces, tip performers in real time, and feel the rush of a global audience
 						cheering with you.
 					</p>
-					<div className="flex flex-wrap gap-4 pt-2">
+					<div className="flex items-center gap-4 pt-2">
+						<UserLogin />
 						<Link href="/show/seed-show-1">
 							<Button
 								size="lg"
-								className="bg-gradient-to-r from-emerald-400 via-emerald-300 to-emerald-500 text-slate-900 font-bold shadow-[0_20px_45px_-15px_rgba(16,185,129,0.6)] border border-emerald-300/60 transition-transform hover:scale-[1.05] hover:shadow-[0_25px_65px_-18px_rgba(16,185,129,0.7)]"
+								className="bg-gradient-to-r from-emerald-400 via-emerald-300 to-emerald-500 text-slate-900 font-bold shadow-[0_20px_45px_-15px_rgba(16,185,129,0.6)] border border-emerald-300/60 transition-transform hover:scale-[1.05] hover:shadow-[0_25px_65px_-18px_rgba(16,185,129,0.7)] whitespace-nowrap"
 							>
 								Enter Live Show
 							</Button>
@@ -46,7 +50,7 @@ export default function HomePage() {
 							<Button
 								size="lg"
 								variant="ghost"
-								className="bg-white/15 hover:bg-white/25 text-white font-semibold border border-white/40 hover:border-white/60 shadow-[0_20px_45px_-18px_rgba(255,255,255,0.2)] transition-transform hover:-translate-y-1 hover:shadow-[0_25px_65px_-20px_rgba(255,255,255,0.28)]"
+								className="bg-white/15 hover:bg-white/25 text-white font-semibold border border-white/40 hover:border-white/60 shadow-[0_20px_45px_-18px_rgba(255,255,255,0.2)] transition-transform hover:-translate-y-1 hover:shadow-[0_25px_65px_-20px_rgba(255,255,255,0.28)] whitespace-nowrap"
 							>
 								Explore Marketplace
 							</Button>

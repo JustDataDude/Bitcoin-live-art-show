@@ -8,15 +8,19 @@ datasource db {
 }
 
 model User {
-  id        String   @id @default(cuid())
-  handle    String   @unique
-  username  String?
-  role      String   @default("viewer")
-  wallets   Wallet[]
-  bids      Bid[]
-  tips      Tip[]
-  messages  ChatMessage[]
-  createdAt DateTime @default(now())
+  id                String   @id @default(cuid())
+  handle            String   @unique
+  username          String?  @unique
+  passwordHash      String?
+  email             String?
+  resetToken        String?
+  resetTokenExpiry  DateTime?
+  role              String   @default("viewer")
+  wallets           Wallet[]
+  bids              Bid[]
+  tips              Tip[]
+  messages          ChatMessage[]
+  createdAt         DateTime @default(now())
 }
 
 model Wallet {
